@@ -26,3 +26,9 @@ type ConnInfo struct {
 	CID          uint64
 	TimeCreation time.Time
 }
+
+type Location struct {
+	Latitude  float64
+	Longitude float64
+	Time      time.Time
+}

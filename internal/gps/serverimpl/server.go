@@ -66,12 +66,6 @@ type ServerConfig struct {
 	MockLogin          bool
 }
 
-type location struct {
-	lat float64
-	lon float64
-	t   time.Time
-}
-
 func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
 
 	s := &Server{}
@@ -243,7 +237,7 @@ func (s *Server) seriesWriter() {
 
 //called from gps client goroutine
 func (s *Server) Location(rid string, lat, lon float64, t time.Time) {
-	s.locationStore(&location{lat: lat, lon: lon, t: t})
+	s.locationStore(&gps.Location{lat: lat, lon: lon, t: t})
 	s.broadcast(rid, lat, lon, t)
 }
 
