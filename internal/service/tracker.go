@@ -61,39 +61,39 @@ func (t *Tracker) GetTrackers(res *GetTrackerResponse) {
 	res.Trackers = trackers
 }
 
-func (t *Tracker) DeleteTracker(id string) bool {
-	sqlStmt := `DELETE FROM tracker WHERE id = $1`
-	ct, err := t.db.Exec(context.Background(), sqlStmt, id)
-	if err != nil {
-		panic(err)
-	} else if ct.RowsAffected() > 0 {
-		return true
-	} else {
-		return false
-	}
-}
+// func (t *Tracker) DeleteTracker(id string) bool {
+// 	sqlStmt := `DELETE FROM tracker WHERE id = $1`
+// 	ct, err := t.db.Exec(context.Background(), sqlStmt, id)
+// 	if err != nil {
+// 		panic(err)
+// 	} else if ct.RowsAffected() > 0 {
+// 		return true
+// 	} else {
+// 		return false
+// 	}
+// }
 
-func (t *Tracker) UpdateTrackerName(id uint64, name string) bool {
-	sqlStmt := `UPDATE tracker set name = $1,updated_at = now() WHERE id = $2`
-	ct, err := t.db.Exec(context.Background(), sqlStmt, name, id)
-	if err != nil {
-		panic(err)
-	} else if ct.RowsAffected() > 0 {
-		return true
-	} else {
-		return false
-	}
-}
+// func (t *Tracker) UpdateTrackerName(id uint64, name string) bool {
+// 	sqlStmt := `UPDATE tracker set name = $1,updated_at = now() WHERE id = $2`
+// 	ct, err := t.db.Exec(context.Background(), sqlStmt, name, id)
+// 	if err != nil {
+// 		panic(err)
+// 	} else if ct.RowsAffected() > 0 {
+// 		return true
+// 	} else {
+// 		return false
+// 	}
+// }
 
-func (t *Tracker) UpdateTrackerComment(id string, comment string) bool {
-	sqlStmt := `UPDATE tracker set comment = $1 , updated_at = now() WHERE id = $2`
-	ct, err := t.db.Exec(context.Background(), sqlStmt, comment, id)
-	if err != nil {
-		panic(err)
-	} else if ct.RowsAffected() > 0 {
-		return true
-	} else {
-		return false
-	}
+// func (t *Tracker) UpdateTrackerComment(id string, comment string) bool {
+// 	sqlStmt := `UPDATE tracker set comment = $1 , updated_at = now() WHERE id = $2`
+// 	ct, err := t.db.Exec(context.Background(), sqlStmt, comment, id)
+// 	if err != nil {
+// 		panic(err)
+// 	} else if ct.RowsAffected() > 0 {
+// 		return true
+// 	} else {
+// 		return false
+// 	}
 
-}
+// }

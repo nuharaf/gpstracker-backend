@@ -78,6 +78,7 @@ func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
 	s.clients = clients{mu: sync.Mutex{}, list: make(map[uint64]gps.ClientInterface)}
 	s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
 	s.logger = log.With().Str("module", "server").Logger()
+	s.loc_chan = make(chan *location, 10)
 	var err error
 	if err != nil {
 		s.logger.Err(err)
@@ -216,7 +217,7 @@ func (s *Server) Subscribe(rid, subname string, sub gps.Subscriber) error {
 	return nil
 }
 
-func (s *Server) seriesPush(loc *location) {
+func (s *Server) locationStore(loc *location) {
 
 	select {
 	case s.loc_chan <- loc:
@@ -240,19 +241,26 @@ func (s *Server) seriesWriter() {
 	}
 }
 
+//called from gps client goroutine
 func (s *Server) Location(rid string, lat, lon float64, t time.Time) {
-	s.seriesPush(&location{lat: lat, lon: lon, t: t})
+	s.locationStore(&location{lat: lat, lon: lon, t: t})
+	s.broadcast(rid, lat, lon, t)
+}
+
+func (s *Server) broadcast(rid string, lat, lon float64, t time.Time) {
+	//get subscription list for this rid
 	s.msubs.mu.RLock()
 	slist, ok := s.msubs.list[rid]
 	s.msubs.mu.RUnlock()
 
 	if ok {
+		//subscription list for this rid exist
 		d, _ := json.Marshal(struct {
 			Latitude  float64
 			Longitude float64
 			Timestamp time.Time
 		}{Latitude: lat, Longitude: lon, Timestamp: t})
-
+		//Iterate subscription list . Hold lock because web client can mutate the list
 		slist.mu.Lock()
 		for subname, sub := range slist.list {
 			err := sub.Push(d)
@@ -262,14 +270,15 @@ func (s *Server) Location(rid string, lat, lon float64, t time.Time) {
 		}
 		slist.mu.Unlock()
 	} else if !ok && !s.static_pub_list {
+		//subscription list for this rid does not exist, initialize with empty list
 		new_slist := &subs{mu: sync.Mutex{}, list: make(map[string]gps.Subscriber)}
+		//hold lock because we will mutate msubs
 		s.msubs.mu.Lock()
 		s.msubs.list[rid] = new_slist
 		s.msubs.mu.Unlock()
 	} else {
 		s.logger.Warn().Str("publisher_rid", rid).Bool("static_pub_list", s.static_pub_list).Msg("Can't create list for unregistered publisher,possibly misconfiguration")
 	}
-
 }
 
 func (s *Server) Login(family, sn string) (rid string, ok bool) {
