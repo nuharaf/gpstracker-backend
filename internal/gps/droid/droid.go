@@ -1,16 +1,18 @@
 package droid
 
 import (
-	"bufio"
 	"encoding/json"
 	"errors"
-	"net"
 	"sync/atomic"
 	"time"
 
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"nuha.dev/gpstracker/internal/gps"
+	"nuha.dev/gpstracker/internal/gps/client"
+	"nuha.dev/gpstracker/internal/gps/server"
+	"nuha.dev/gpstracker/internal/gps/store"
+	"nuha.dev/gpstracker/internal/gps/subscriber"
+	"nuha.dev/gpstracker/internal/util/wc"
 )
 
 type loginMsg struct {
@@ -32,57 +34,59 @@ type LocationMsg struct {
 }
 
 type Droid struct {
-	c         net.Conn
-	r         *bufio.Reader
-	info      gps.ConnInfo
-	s         gps.ServerInterface
+	c         *wc.Conn
+	s         server.ServerInterface
 	rid       string
 	logged_in int32
-	closed    int32
 	err       error
 	log       zerolog.Logger
-	byte_in   uint64
-	byte_out  uint64
 	login     loginMsg
 	loc       LocationMsg
+	store     store.Store
+	state     *client.ClientState
 }
 
 var errRejectedLogin = errors.New("login rejected")
 
-func NewDroid(r *bufio.Reader, c net.Conn, info gps.ConnInfo, server gps.ServerInterface) *Droid {
-	o := &Droid{c: c, r: r, info: info, s: server}
-	logger := log.With().Str("module", "droid").Uint64("cid", info.CID).Logger()
+func NewDroid(c *wc.Conn, server server.ServerInterface) *Droid {
+	o := &Droid{c: c, s: server}
+	logger := log.With().Str("module", "droid").Uint64("cid", c.Cid()).Logger()
 	o.log = logger
 	o.login = loginMsg{}
 	o.loc = LocationMsg{}
 	return o
 }
 
-func (dr *Droid) Info() gps.ConnInfo {
-	return dr.info
-}
-
-func (dr *Droid) Stat() (in, out uint64) {
-	return atomic.LoadUint64(&dr.byte_in), atomic.LoadUint64(&dr.byte_out)
+func (dr *Droid) Conn() *wc.Conn {
+	return dr.c
 }
 
 func (dr *Droid) Closed() bool {
-	return atomic.LoadInt32(&dr.closed) == 1
+	return dr.c.Closed()
 }
 
 func (dr *Droid) LoggedIn() bool {
 	return atomic.LoadInt32(&dr.logged_in) == 1
 }
 
+func (dr *Droid) Subscribe(sub subscriber.Subscriber) {
+	dr.state.Sublist.Subscribe(sub)
+}
+
 func (dr *Droid) closeErr(err error) {
 	dr.err = err
 	dr.c.Close()
-	atomic.StoreInt32(&dr.closed, 1)
+	dr.state.Stat.DisconnectEv(time.Now())
+}
+
+func (dr *Droid) SetState(state *client.ClientState) {
+	dr.state = state
 }
 
 func (dr *Droid) Run() {
 	for {
-		msg, err := dr.r.ReadBytes('\n')
+		msg, err := dr.c.ReadBytes('\n')
+		tread := time.Now()
 		if err != nil {
 			dr.log.Error().Err(err).Msg("error while reading")
 			dr.closeErr(err)
@@ -90,28 +94,38 @@ func (dr *Droid) Run() {
 		}
 		if dr.logged_in != 1 {
 			err := json.Unmarshal(msg, &dr.login)
-			dr.log.Info().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
 			if err != nil {
-				dr.log.Error().Err(err).Msg("error while pasring")
+				dr.log.Error().Err(err).Msg("error parsing login message")
 				dr.closeErr(err)
 				return
 			}
-			rid, ok := dr.s.Login(dr.login.Family, dr.login.Serial)
-			dr.rid = rid
+			dr.log.Debug().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
+			rid, ok := dr.s.Login(dr.login.Family, dr.login.Serial, dr)
+			tlogin := time.Now()
 			if ok {
 				atomic.StoreInt32(&dr.logged_in, 1)
+				dr.state.Stat.ConnectEv(dr.c.Created())
+				dr.state.Stat.LoginEv(tlogin)
+				dr.rid = rid
+				dr.log = dr.log.With().Str("rid", rid).Logger()
+				dr.log.Info().Msg("login successful")
+
 			} else {
 				dr.closeErr(errRejectedLogin)
+				dr.log.Err(errRejectedLogin).Msg("login rejected")
+				return
 			}
 		} else {
 			err := json.Unmarshal(msg, &dr.loc)
 			if err != nil {
-				dr.log.Error().Err(err).Msg("error while pasring")
+				dr.log.Error().Err(err).Msg("error parsing location data")
 				dr.closeErr(err)
 				return
 			}
 			dr.log.Debug().Str("event", "location update").RawJSON("event_data", msg).Msg("")
-			dr.s.Location(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.GpsTime)
+			dr.state.Sublist.Send(dr.rid, []byte{})
+			dr.state.Stat.CounterIncr(1, tread)
+			dr.store.Put(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.Altitude, dr.loc.GpsTime, tread)
 		}
 
 	}

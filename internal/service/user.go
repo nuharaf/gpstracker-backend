@@ -21,16 +21,6 @@ const (
 	Suspended Status = "suspended"
 )
 
-type CreateUserRequest struct {
-	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required"`
-}
-
-type GetUserResponse struct {
-	BasicResponse
-	Users []*UserModel `json:"users"`
-}
-
 type UserModel struct {
 	Id        string       `json:"id"`
 	Username  string       `json:"username"`
@@ -40,13 +30,18 @@ type UserModel struct {
 	UpdatedAt sql.NullTime `json:"updated_at"`
 }
 
-type SessionModel struct {
-	sessionId string
-	csrfToken string
-	wsToken   string
-	userId    uint64
-	createdAt time.Time
-	updatedAt *time.Time
+// type SessionModel struct {
+// 	sessionId string
+// 	csrfToken string
+// 	wsToken   string
+// 	userId    uint64
+// 	createdAt time.Time
+// 	updatedAt *time.Time
+// }
+
+type CreateUserRequest struct {
+	Username string `json:"username" validate:"required"`
+	Password string `json:"password" validate:"required"`
 }
 
 func (u *User) CreateUser(req *CreateUserRequest, res *BasicResponse) {
@@ -58,6 +53,11 @@ func (u *User) CreateUser(req *CreateUserRequest, res *BasicResponse) {
 		panic(err)
 	}
 	res.Status = 0
+}
+
+type GetUserResponse struct {
+	BasicResponse
+	Users []*UserModel `json:"users"`
 }
 
 func (u *User) GetUsers(res *GetUserResponse) {
@@ -78,17 +78,24 @@ func (u *User) GetUsers(res *GetUserResponse) {
 	res.Status = 0
 }
 
-// func (u *User) changeUserStatus(id uint64, status string) bool {
-// 	sqlStmt := `UPDATE "user" SET status = $1 WHERE id = id`
-// 	res, err := u.db.Exec(context.Background(), sqlStmt, status)
-// 	if err != nil {
-// 		panic(err)
-// 	}
-// 	if row := res.RowsAffected(); row == 1 {
-// 		return true
-// 	}
-// 	return false
-// }
+type UpdateUserStatusRequest struct {
+	Id     string `json:"id" validate:"required"`
+	Status string `json:"status" validate:"required"`
+}
+
+func (u *User) ChangeUserStatus(req *UpdateUserStatusRequest, res *BasicResponse) {
+	sqlStmt := `UPDATE "user" SET status = $1 WHERE id = $2`
+	ct, err := u.db.Exec(context.Background(), sqlStmt, req.Status, req.Id)
+	if err != nil {
+		panic(err)
+	}
+	if row := ct.RowsAffected(); row == 1 {
+		res.Status = 0
+	} else {
+		res.Status = -1
+	}
+
+}
 
 // func (u *User) getUserById(id uint64) (*UserModel, bool) {
 // 	sqlStmt := `SELECT id,username,"password",status FROM "user" WHERE id=$1 `

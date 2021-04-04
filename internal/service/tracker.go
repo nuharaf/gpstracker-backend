@@ -61,39 +61,53 @@ func (t *Tracker) GetTrackers(res *GetTrackerResponse) {
 	res.Trackers = trackers
 }
 
-// func (t *Tracker) DeleteTracker(id string) bool {
-// 	sqlStmt := `DELETE FROM tracker WHERE id = $1`
-// 	ct, err := t.db.Exec(context.Background(), sqlStmt, id)
-// 	if err != nil {
-// 		panic(err)
-// 	} else if ct.RowsAffected() > 0 {
-// 		return true
-// 	} else {
-// 		return false
-// 	}
-// }
+type DeleteTrackerRequest struct {
+	Id string `json:"id" validate:"required"`
+}
 
-// func (t *Tracker) UpdateTrackerName(id uint64, name string) bool {
-// 	sqlStmt := `UPDATE tracker set name = $1,updated_at = now() WHERE id = $2`
-// 	ct, err := t.db.Exec(context.Background(), sqlStmt, name, id)
-// 	if err != nil {
-// 		panic(err)
-// 	} else if ct.RowsAffected() > 0 {
-// 		return true
-// 	} else {
-// 		return false
-// 	}
-// }
+func (t *Tracker) DeleteTracker(req *DeleteTrackerRequest, res *BasicResponse) {
+	sqlStmt := `DELETE FROM tracker WHERE id = $1`
+	ct, err := t.db.Exec(context.Background(), sqlStmt, req.Id)
+	if err != nil {
+		panic(err)
+	} else if ct.RowsAffected() > 0 {
+		res.Status = 0
+	} else {
+		res.Status = -1
+	}
+}
 
-// func (t *Tracker) UpdateTrackerComment(id string, comment string) bool {
-// 	sqlStmt := `UPDATE tracker set comment = $1 , updated_at = now() WHERE id = $2`
-// 	ct, err := t.db.Exec(context.Background(), sqlStmt, comment, id)
-// 	if err != nil {
-// 		panic(err)
-// 	} else if ct.RowsAffected() > 0 {
-// 		return true
-// 	} else {
-// 		return false
-// 	}
+type UpdateTrackerNameRequest struct {
+	Id   string `json:"id" validate:"required"`
+	Name string `json:"name" validate:"required"`
+}
 
-// }
+func (t *Tracker) UpdateTrackerName(req *UpdateTrackerNameRequest, res *BasicResponse) {
+	sqlStmt := `UPDATE tracker set name = $1,updated_at = now() WHERE id = $2`
+	ct, err := t.db.Exec(context.Background(), sqlStmt, req.Name, req.Id)
+	if err != nil {
+		panic(err)
+	} else if ct.RowsAffected() > 0 {
+		res.Status = 0
+	} else {
+		res.Status = -1
+	}
+}
+
+type UpdateTrackerCommentRequest struct {
+	Id      string `json:"id" validate:"required"`
+	Comment string `json:"comment" validate:"required"`
+}
+
+func (t *Tracker) UpdateTrackerComment(req *UpdateTrackerCommentRequest, res *BasicResponse) {
+	sqlStmt := `UPDATE tracker set comment = $1 , updated_at = now() WHERE id = $2`
+	ct, err := t.db.Exec(context.Background(), sqlStmt, req.Comment, req.Id)
+	if err != nil {
+		panic(err)
+	} else if ct.RowsAffected() > 0 {
+		res.Status = 0
+	} else {
+		res.Status = -1
+	}
+
+}

@@ -2,7 +2,6 @@ package store
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -22,11 +21,12 @@ type Store struct {
 }
 
 type record struct {
-	rid string
-	lon float64
-	lat float64
-	alt float32
-	t   time.Time
+	rid  string
+	lon  float64
+	lat  float64
+	alt  float32
+	gpst time.Time
+	srvt time.Time
 }
 
 func NewStore(db *pgxpool.Pool, table string) *Store {
@@ -47,8 +47,8 @@ func NewStore(db *pgxpool.Pool, table string) *Store {
 
 }
 
-func (st *Store) Put(rid string, lon float64, lat float64, alt float32, t time.Time) {
-	rec := record{rid: rid, lon: lon, lat: lat, alt: alt, t: t}
+func (st *Store) Put(rid string, lon float64, lat float64, alt float32, gpst time.Time, srvt time.Time) {
+	rec := record{rid: rid, lon: lon, lat: lat, alt: alt, gpst: gpst, srvt: srvt}
 	select {
 	case st.ch <- rec:
 	default:
@@ -72,18 +72,18 @@ func (st *Store) writer() {
 			buffer[c] = r
 			c = c + 1
 			if c == len(buffer) {
-				st.logger.Error().Msg("Flush due to full buffer")
+				st.logger.Debug().Msg("Flush due to full buffer")
 				st.flush(buffer[:c])
 				c = 0
 				st.rearmTimer()
 			}
 		case <-st.timer.C:
 			if c != 0 {
-				st.logger.Error().Msg("Flush due to expired timer")
+				st.logger.Debug().Msg("Flush due to expired timer")
 				st.flush(buffer[:c])
 				c = 0
 			} else {
-				st.logger.Error().Msg("Timer expired but no data to flush")
+				st.logger.Debug().Msg("Timer expired but no data to flush")
 			}
 
 		}
@@ -91,20 +91,19 @@ func (st *Store) writer() {
 }
 
 func (st *Store) flush(data []record) {
+	l := len(data)
 	t0 := time.Now()
-
-	t1 := time.Now()
-	_, err = st.dbc.CopyFrom(context.Background(),
+	_, err := st.dbc.CopyFrom(context.Background(),
 		pgx.Identifier{st.table},
-		[]string{"rid", "lon", "lat", "alt", "gpst"},
+		[]string{"rid", "longitude", "latitude", "altitude", "gps_time", "server_time"},
 		pgx.CopyFromSlice(len(data), func(i int) ([]interface{}, error) {
 			d := data[i]
-			return []interface{}{d.rid, d.lon, d.lat, d.alt, d.gpst}, nil
+			return []interface{}{d.rid, d.lon, d.lat, d.alt, d.gpst, d.srvt}, nil
 		}))
 
 	if err != nil {
-		log.Fatal(err)
+		st.logger.Err(err).Msg("Flushing error")
+	} else {
+		st.logger.Info().Str("action", "flush").Int("length", l).Dur("time_taken", time.Since(t0)).Msg("Flush successfull")
 	}
-	fmt.Println(time.Since(t1).Nanoseconds())
-
 }
