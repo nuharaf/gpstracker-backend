@@ -8,7 +8,7 @@ import (
 )
 
 func main() {
-	debug := flag.Bool("debug", false, "sets log level to debug")
+	debug := flag.Bool("debug", true, "sets log level to debug")
 	listen_addr := flag.String("address", ":5555", "address to listen to")
 	flag.Parse()
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
