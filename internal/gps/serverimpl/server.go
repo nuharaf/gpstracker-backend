@@ -161,7 +161,7 @@ func (s *Server) Login(family, serial string, c client.ClientInterface) (rid str
 	s.clientstate_list.mu.Lock()
 	state, ok := s.clientstate_list.list[rid]
 	if !ok {
-		state := &client.ClientState{Stat: stat.NewStat(), Sublist: sublist.NewMulSublist()}
+		state = &client.ClientState{Stat: stat.NewStat(), Sublist: sublist.NewMulSublist()}
 		s.clientstate_list.list[rid] = state
 	}
 	s.clientstate_list.mu.Unlock()
