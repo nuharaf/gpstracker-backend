@@ -155,10 +155,9 @@ func (s *Server) Login(family, serial string, c client.ClientInterface) (rid str
 				s.logger.Error().Err(err).Msg("error while querying database")
 				return "", false
 			}
-		} else {
-			s.logger.Info().Str("family", family).Str("sn", serial).Msgf("tracker found with rid : %s", rid)
 		}
 	}
+	s.logger.Info().Str("family", family).Str("sn", serial).Msgf("tracker found with rid : %s", rid)
 	s.clientstate_list.mu.Lock()
 	state, ok := s.clientstate_list.list[rid]
 	if !ok {
