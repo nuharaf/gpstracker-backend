@@ -1,15 +1,12 @@
 package serverimpl
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
-	"time"
 
-	"github.com/hashicorp/yamux"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog"
@@ -18,8 +15,8 @@ import (
 	"nuha.dev/gpstracker/internal/gps/droid"
 	"nuha.dev/gpstracker/internal/gps/gt06"
 	"nuha.dev/gpstracker/internal/gps/stat"
-	"nuha.dev/gpstracker/internal/gps/store"
 	"nuha.dev/gpstracker/internal/gps/sublist"
+	"nuha.dev/gpstracker/internal/store"
 	"nuha.dev/gpstracker/internal/util/wc"
 )
 
@@ -65,9 +62,10 @@ type Server struct {
 
 type ServerConfig struct {
 	DirectListenerAddr string
-	YamuxTunnelAddr    string
-	MockLogin          bool
-	YamuxToken         string
+	// EnableTunnel       bool
+	// YamuxTunnelAddr    string
+	MockLogin bool
+	// YamuxToken         string
 }
 
 func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
@@ -83,101 +81,121 @@ func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
 	return s
 }
 
-func (s *Server) runMuxListerner() {
-	runLoop := func() {
-		s.logger.Info().Msgf("Dialling tunnel %s", s.config.YamuxTunnelAddr)
-		yconn, err := net.Dial("tcp", s.config.YamuxTunnelAddr)
-		if err != nil {
-			s.logger.Err(err).Msg("unable to dial yamux server")
-			return
-		}
-		_, err = yconn.Write([]byte(s.config.YamuxToken))
-		if err != nil {
-			yconn.Close()
-			s.logger.Err(err).Msg("unable to authenticate with yamux server")
-			return
-		}
-		status := []byte{0}
-		_, err = yconn.Read(status)
-		if err != nil {
-			yconn.Close()
-			s.logger.Err(err).Msg("unable to authenticate with yamux server")
-			return
-		}
-		if status[0] == '+' {
-			s.logger.Info().Msg("yamux tunnel accepted")
-		} else {
-			s.logger.Error().Msg("yamux tunnel rejected")
-			return
-		}
-		session, err := yamux.Client(yconn, nil)
-		if err != nil {
-			s.logger.Err(err)
-			return
-		}
-		for {
-			tconn, err := session.Accept()
-			if err != nil {
-				s.logger.Err(err)
-				return
-			}
-			cid := atomic.AddUint64(&s.cid_counter, 1)
-			go func() {
-				r := bufio.NewReader(tconn)
-				raddr, err := r.ReadString('\n')
-				if err != nil {
-					s.logger.Err(err)
-					tconn.Close()
-					return
-				}
-				wconn := wc.NewWrappedConn(tconn, raddr, cid, log.Logger)
-				client, err := s.NewClient(wconn)
-				s.saveClient(cid, client)
-				if err == nil {
-					client.Run()
-				}
-				s.delClient(cid)
-			}()
+// func (s *Server) runMuxListerner() {
+// 	runLoop := func() {
+// 		defer s.logger.Error().Msg("yamux tunnel stopped")
+// 		s.logger.Info().Msgf("dialling tunnel %s", s.config.YamuxTunnelAddr)
+// 		yconn, err := net.Dial("tcp", s.config.YamuxTunnelAddr)
+// 		if err != nil {
+// 			s.logger.Err(err).Msg("unable to dial yamux server")
+// 			return
+// 		}
+// 		s.logger.Info().Msg("dialled yamux server")
+// 		_, err = yconn.Write([]byte(s.config.YamuxToken))
+// 		if err != nil {
+// 			yconn.Close()
+// 			s.logger.Err(err).Msg("unable to authenticate with yamux server")
+// 			return
+// 		}
+// 		status := []byte{0}
+// 		_, err = yconn.Read(status)
+// 		if err != nil {
+// 			yconn.Close()
+// 			s.logger.Err(err).Msg("unable to authenticate with yamux server")
+// 			return
+// 		}
+// 		if status[0] == '+' {
+// 			s.logger.Info().Msg("yamux tunnel auth accepted")
+// 		} else {
+// 			s.logger.Error().Msg("yamux tunnel auth rejected")
+// 			return
+// 		}
+// 		s.logger.Info().Msg("creating yamux session ...")
+// 		session, err := yamux.Client(yconn, nil)
+// 		if err != nil {
+// 			s.logger.Err(err).Msg("failed to create yamux session")
+// 			return
+// 		}
+// 		s.logger.Info().Msg("yamux session created")
 
-		}
-	}
+// 		for {
+// 			s.logger.Info().Msg("accepting new yamux stream ...")
+// 			tconn, err := session.Accept()
+// 			if err != nil {
+// 				s.logger.Err(err).Msg("failed to accept yamux stream")
+// 				return
+// 			}
+// 			// cid := atomic.AddUint64(&s.cid_counter, 1)
+// 			go func() {
+// 				r := bufio.NewReader(tconn)
+// 				s.logger.Info().Msg("reading forwarded remote address info from yamux stream")
+// 				raddr, err := r.ReadString('\n')
+// 				if err != nil {
+// 					s.logger.Err(err).Msg("failed reading remote address info")
+// 					tconn.Close()
+// 					return
+// 				}
+// 				s.handleConn(conn, raddr)
+// 				// wconn := wc.NewWrappedConn(tconn, raddr, cid, log.Logger)
+// 				// s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
+// 				// client, err := s.newClient(wconn)
+// 				// s.saveClient(cid, client)
+// 				// if err == nil {
+// 				// 	s.logger.Info().Uint64("cid", cid).Msg("running client")
+// 				// 	client.Run()
+// 				// } else {
+// 				// 	s.logger.Info().Uint64("cid", cid).Msg("failed to create client")
+// 				// }
+// 				// s.logger.Info().Uint64("cid", cid).Msg("client stopped")
+// 				// s.delClient(cid)
+// 			}()
 
-	for {
-		t0 := time.Now()
-		runLoop()
-		d := time.Since(t0)
-		if d > 10*time.Second {
-			time.Sleep(1 * time.Second)
-		} else {
-			time.Sleep(5 * time.Second)
-		}
+// 		}
+// 	}
 
-	}
-}
+// 	for {
+// 		t0 := time.Now()
+// 		runLoop()
+// 		d := time.Since(t0)
+// 		if d > 10*time.Second {
+// 			time.Sleep(1 * time.Second)
+// 		} else {
+// 			time.Sleep(5 * time.Second)
+// 		}
+
+// 	}
+// }
 
 func (s *Server) runDirectListener() {
+	s.logger.Info().Str("addr", s.config.DirectListenerAddr).Msg("starting direct port listener")
 	ln, err := net.Listen("tcp", s.config.DirectListenerAddr)
 	if err != nil {
-		panic(err)
+		s.logger.Err(err).Msg("unable to listen")
+		return
 	}
 	for {
+		s.logger.Info().Msg("accepting new direct connection ...")
 		conn, err := ln.Accept()
 		if err != nil {
-			s.logger.Err(err)
+			s.logger.Err(err).Msg("failed to accept new direct connection")
 			ln.Close()
 			return
 		}
-		cid := atomic.AddUint64(&s.cid_counter, 1)
+
 		go func() {
-			wconn := wc.NewWrappedConn(conn, conn.RemoteAddr().String(), cid, log.Logger)
-			client, err := s.NewClient(wconn)
-			s.saveClient(cid, client)
-			if err == nil {
-				client.Run()
-			}
-			s.delClient(cid)
+			s.handleConn(conn, conn.RemoteAddr().String())
+			// wconn := wc.NewWrappedConn(conn, conn.RemoteAddr().String(), cid, log.Logger)
+			// s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
+			// client, err := s.NewClient(wconn)
+			// s.saveClient(cid, client)
+			// if err == nil {
+			// 	s.logger.Info().Uint64("cid", cid).Msg("running client")
+			// 	client.Run()
+			// }
+			// s.delClient(cid)
 		}()
 	}
+
 }
 
 func (s *Server) saveClient(cid uint64, c client.ClientInterface) {
@@ -193,16 +211,18 @@ func (s *Server) delClient(cid uint64) {
 }
 
 func (s *Server) Run() {
-	if s.config.DirectListenerAddr != "" {
-		go func() {
-			s.runDirectListener()
-		}()
-	}
-	if s.config.YamuxTunnelAddr != "" {
-		go func() {
-			s.runMuxListerner()
-		}()
-	}
+	// var wg sync.WaitGroup
+
+	s.runDirectListener()
+
+	// if s.config.YamuxTunnelAddr != "" {
+	// 	wg.Add(1)
+	// 	go func() {
+	// 		s.runMuxListerner()
+	// 		wg.Done()
+	// 	}()
+	// }
+	// wg.Wait()
 }
 
 func (s *Server) GetClientState(rid string) *client.ClientState {
@@ -318,7 +338,23 @@ func (s *Server) Login(family, serial string, c client.ClientInterface) (rid str
 	return rid, true
 }
 
-func (s *Server) NewClient(conn *wc.Conn) (client.ClientInterface, error) {
+func (s *Server) handleConn(conn net.Conn, raddr string) {
+	cid := atomic.AddUint64(&s.cid_counter, 1)
+	wconn := wc.NewWrappedConn(conn, raddr, cid, log.Logger)
+	s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
+	client, err := s.newClient(wconn)
+	s.saveClient(cid, client)
+	if err == nil {
+		s.logger.Info().Uint64("cid", cid).Msg("running client")
+		client.Run()
+	} else {
+		s.logger.Info().Uint64("cid", cid).Msg("failed to create client")
+	}
+	s.logger.Info().Uint64("cid", cid).Msg("client stopped")
+	s.delClient(cid)
+}
+
+func (s *Server) newClient(conn *wc.Conn) (client.ClientInterface, error) {
 	// conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	st, err := conn.Peek(1)
 	if err != nil {

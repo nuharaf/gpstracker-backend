@@ -10,8 +10,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/server"
-	"nuha.dev/gpstracker/internal/gps/store"
 	"nuha.dev/gpstracker/internal/gps/subscriber"
+	"nuha.dev/gpstracker/internal/store"
 	"nuha.dev/gpstracker/internal/util/wc"
 )
 
@@ -105,13 +105,14 @@ func (gt06 *GT06) Run() {
 				ci := zerolog.Dict().Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC)
 				ev := zerolog.Dict().Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed)
 				gt06.log.Debug().Str("event", "location update").Dict("event_data", ev.Bool("ACC", loc.ACC).Dict("cell_info", ci)).Msg("")
-				gt06.store.Put(gt06.rid, loc.Latitude, loc.Longitude, 0.0, loc.Timestamp, tread)
+				mps_speed := (float32(loc.Speed) * 1000) / 3600
+				gt06.store.Put(gt06.rid, loc.Latitude, loc.Longitude, 0.0, mps_speed, loc.Timestamp, tread)
 				gt06.state.Sublist.Send(gt06.rid, []byte{})
 				gt06.state.Stat.CounterIncr(1, tread)
 			case byte(informationTxPacket):
 				switch gt06.msg.Payload[0] {
 				case 0x04:
-					gt06.log.Info().Str("event", "information packet").Dict("event_data", zerolog.Dict().Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:]))).Msg("")
+					gt06.log.Debug().Str("event", "information packet").Dict("event_data", zerolog.Dict().Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:]))).Msg("")
 				default:
 					gt06.log.Debug().Str("event", "information packet").Hex("data", gt06.msg.Payload).Msg("ignoring unknown information packet")
 				}

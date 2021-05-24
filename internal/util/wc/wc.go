@@ -23,9 +23,10 @@ type Conn struct {
 }
 
 func NewWrappedConn(conn net.Conn, raddr string, cid uint64, logger zerolog.Logger) *Conn {
-	o := &Conn{reader: bufio.NewReader(conn), conn: conn, raddr: raddr, cid: cid, logger: logger}
+	o := &Conn{reader: bufio.NewReader(conn), conn: conn, raddr: raddr, cid: cid}
 	o.created = time.Now()
-	o.logger.Debug().Str("remote_address", o.raddr).Uint64("cid", o.cid).Msg("Connection created")
+	o.logger = logger.With().Str("module", "wconn").Logger()
+	o.logger.Debug().Str("remote_address", o.raddr).Uint64("cid", o.cid).Msg("connection created")
 	return o
 }
 

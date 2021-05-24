@@ -3,8 +3,11 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
+	"github.com/jackc/pgconn"
+	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"nuha.dev/gpstracker/internal/util"
 )
@@ -15,41 +18,36 @@ type User struct {
 	db *pgxpool.Pool
 }
 
-const (
-	Enabled   Status = "enabled"
-	Reset     Status = "reset"
-	Suspended Status = "suspended"
-)
-
 type UserModel struct {
 	Id        string       `json:"id"`
 	Username  string       `json:"username"`
 	Password  string       `json:"password"`
-	Status    Status       `json:"status"`
+	InitDone  bool         `json:"init_done"`
+	Suspended bool         `json:"suspended"`
 	CreatedAt time.Time    `json:"created_at"`
 	UpdatedAt sql.NullTime `json:"updated_at"`
 }
 
-// type SessionModel struct {
-// 	sessionId string
-// 	csrfToken string
-// 	wsToken   string
-// 	userId    uint64
-// 	createdAt time.Time
-// 	updatedAt *time.Time
-// }
-
 type CreateUserRequest struct {
-	Username string `json:"username" validate:"required"`
-	Password string `json:"password" validate:"required"`
+	Username      string `json:"username" validate:"required"`
+	Password      string `json:"password" validate:"required"`
+	Role          string `json:"role" validate:"oneof=monitor admin superadmin"`
+	SessionLength uint64 `json:"session_length" validate:"required"`
 }
 
-func (u *User) CreateUser(req *CreateUserRequest, res *BasicResponse) {
+func (u *User) CreateUser(ctx context.Context, req *CreateUserRequest, res *BasicResponse) {
 	hashedPwd := util.CryptPwd(req.Password)
 	uuid := util.GenUUID()
-	sqlStmt := `INSERT INTO public."user" (id,username,"password",status,created_at) VALUES ($1,$2,$3,$4,now())`
-	_, err := u.db.Exec(context.Background(), sqlStmt, uuid, req.Username, hashedPwd, Reset)
+	sqlStmt := `INSERT INTO public."user" (id,username,"password",init_done,suspended,role,session_length_sec,created_at) VALUES ($1,$2,$3,false,false,$4,$5,now())`
+	_, err := u.db.Exec(ctx, sqlStmt, uuid, req.Username, hashedPwd, req.Role, req.SessionLength)
 	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) {
+			if pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "user_username_key" {
+				res.Status = -1
+				return
+			}
+		}
 		panic(err)
 	}
 	res.Status = 0
@@ -60,15 +58,15 @@ type GetUserResponse struct {
 	Users []*UserModel `json:"users"`
 }
 
-func (u *User) GetUsers(res *GetUserResponse) {
-	sqlStmt := `SELECT id,username,"password",status,created_at,updated_at FROM public."user"`
-	rows, _ := u.db.Query(context.Background(), sqlStmt)
+func (u *User) GetUsers(ctx context.Context, res *GetUserResponse) {
+	sqlStmt := `SELECT id,username,"password",suspended,init_done,created_at,updated_at FROM public."user"`
+	rows, _ := u.db.Query(ctx, sqlStmt)
 	defer rows.Close()
 	users := make([]*UserModel, 0)
 
 	for rows.Next() {
 		user := &UserModel{}
-		err := rows.Scan(&user.Id, &user.Username, &user.Password, &user.Status, &user.CreatedAt, &user.UpdatedAt)
+		err := rows.Scan(&user.Id, &user.Username, &user.Password, &user.Suspended, &user.InitDone, &user.CreatedAt, &user.UpdatedAt)
 		if err != nil {
 			panic(err)
 		}
@@ -78,14 +76,13 @@ func (u *User) GetUsers(res *GetUserResponse) {
 	res.Status = 0
 }
 
-type UpdateUserStatusRequest struct {
-	Id     string `json:"id" validate:"required"`
-	Status string `json:"status" validate:"required"`
+type SuspendUserRequest struct {
+	Id string `json:"id" validate:"required"`
 }
 
-func (u *User) ChangeUserStatus(req *UpdateUserStatusRequest, res *BasicResponse) {
-	sqlStmt := `UPDATE "user" SET status = $1 WHERE id = $2`
-	ct, err := u.db.Exec(context.Background(), sqlStmt, req.Status, req.Id)
+func (u *User) SuspendUser(ctx context.Context, req *SuspendUserRequest, res *BasicResponse) {
+	sqlStmt := `UPDATE "user" SET suspended = true WHERE id = $1`
+	ct, err := u.db.Exec(ctx, sqlStmt, req.Id)
 	if err != nil {
 		panic(err)
 	}
@@ -94,8 +91,25 @@ func (u *User) ChangeUserStatus(req *UpdateUserStatusRequest, res *BasicResponse
 	} else {
 		res.Status = -1
 	}
-
 }
+
+// type ChangePasswordRequest struct {
+// 	CurrentPassword string `json:"current_password" validate:"required"`
+// 	NewPassword     string `json:"new_password" validate:"required"`
+// }
+
+// func (u *User) ChangeSelfPassword(ctx context.Context, req *UpdateUserStatusRequest, res *BasicResponse) {
+// 	sqlStmt := `UPDATE "user" SET status = $1 WHERE id = $2`
+// 	ct, err := u.db.Exec(ctx, sqlStmt, req.Status, req.Id)
+// 	if err != nil {
+// 		panic(err)
+// 	}
+// 	if row := ct.RowsAffected(); row == 1 {
+// 		res.Status = 0
+// 	} else {
+// 		res.Status = -1
+// 	}
+// }
 
 // func (u *User) getUserById(id uint64) (*UserModel, bool) {
 // 	sqlStmt := `SELECT id,username,"password",status FROM "user" WHERE id=$1 `

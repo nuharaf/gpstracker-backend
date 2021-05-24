@@ -10,8 +10,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/server"
-	"nuha.dev/gpstracker/internal/gps/store"
 	"nuha.dev/gpstracker/internal/gps/subscriber"
+	"nuha.dev/gpstracker/internal/store"
 	"nuha.dev/gpstracker/internal/util/wc"
 )
 
@@ -99,7 +99,7 @@ func (dr *Droid) Run() {
 				dr.closeErr(err)
 				return
 			}
-			dr.log.Debug().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
+			dr.log.Info().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
 			rid, ok := dr.s.Login(dr.login.Family, dr.login.Serial, dr)
 			tlogin := time.Now()
 			if ok {
@@ -125,7 +125,7 @@ func (dr *Droid) Run() {
 			dr.log.Debug().Str("event", "location update").RawJSON("event_data", msg).Msg("")
 			dr.state.Sublist.Send(dr.rid, []byte{})
 			dr.state.Stat.CounterIncr(1, tread)
-			dr.store.Put(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.Altitude, dr.loc.GpsTime, tread)
+			dr.store.Put(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.Altitude, dr.loc.Speed, dr.loc.GpsTime, tread)
 		}
 
 	}

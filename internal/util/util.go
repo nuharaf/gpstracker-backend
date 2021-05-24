@@ -29,22 +29,14 @@ func (bc *BuffConn) Close() error {
 	return bc.conn.Close()
 }
 
-func GenerateSessionId() string {
-	return GenRandomString(24)
-}
-
-func GenerateWsToken() string {
-	return GenRandomString(24)
-}
-
 // From: https://blog.questionable.services/article/generating-secure-random-numbers-crypto-rand/
 
 // genRandomString returns a URL-safe, base64 encoded securely generated random
 // string.  It will return an error if the system's secure random number
 // generator fails to function correctly, in which case the caller should not
 // continue.
-func GenRandomString(n int) string {
-	b := GenRandomBytes(n)
+func GenRandomString(d []byte, n int) string {
+	b := append(d, GenRandomBytes(n)...)
 	return encode(b)
 }
 
@@ -66,6 +58,7 @@ func encode(b []byte) string {
 }
 
 func JsonWrite(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
 	err := json.NewEncoder(w).Encode(v)
 	if err != nil {
 		panic(err)
