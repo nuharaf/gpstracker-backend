@@ -42,6 +42,7 @@ func NewGT06(c *wc.Conn, server server.ServerInterface, store store.Store) *GT06
 	o.log = logger
 	o.LogOpts = LogOpts{log_read: false, log_write: false}
 	o.server = server
+	o.store = store
 	return o
 }
 
@@ -53,7 +54,7 @@ func (gt06 *GT06) closeErr(err error) {
 
 func (gt06 *GT06) write(d []byte) {
 	if gt06.LogOpts.log_write {
-		gt06.log.Debug().Str("action", "write").Hex("data", d).Msg("")
+		gt06.log.Debug().Str("operation", "write").Hex("data", d).Msg("")
 	}
 	_, err := gt06.c.Write(d)
 	if err != nil {
@@ -84,69 +85,76 @@ func (gt06 *GT06) LoggedIn() bool {
 }
 
 func (gt06 *GT06) Run() {
+
+	gt06.readMessage()
+	if gt06.c.Closed() {
+		return
+	}
+	if gt06.msg.Protocol == loginMessage {
+		sn := parseLoginMessage(gt06.msg.Payload)
+		rid, ok := gt06.server.Login("gt06", sn, gt06)
+		tlogin := time.Now()
+		if ok {
+			gt06.rid = rid
+			gt06.log.Info().Str("event", "login").Str("sn", sn).Str("rid", rid).Msg("login accepted")
+			gt06.state.Stat.ConnectEv(gt06.c.Created())
+			gt06.state.Stat.LoginEv(tlogin)
+			gt06.log = gt06.log.With().Str("rid", rid).Logger()
+			gt06.write(loginOk(gt06.msg.Serial))
+			atomic.StoreInt32(&gt06.logged_in, 1)
+		} else {
+			gt06.log.Error().Str("event", "login").Str("sn", sn).Str("error", "login rejected")
+			gt06.closeErr(errRejectedLogin)
+			return
+		}
+	} else {
+		gt06.log.Error().Str("error", "illegal state: first message not login message").Hex("protocol_code", []byte{gt06.msg.Protocol}).Hex("payload", gt06.msg.Payload).Msg("")
+	}
+
+	gt06.state.Attached.Lock()
 	for {
 		gt06.readMessage()
 		tread := time.Now()
 		if gt06.c.Closed() {
-			return
+			break
 		}
-		if gt06.logged_in == 1 {
-			switch gt06.msg.Protocol {
-			case byte(timeCheck):
-				gt06.log.Info().Str("event", "terminal time update").Msg("")
-				t := time.Now().UTC()
-				gt06.write(timeResponse(&t, gt06.msg.Serial))
-			case byte(statusInformation):
-				st := parseStatusInformation(gt06.msg.Payload)
-				gt06.log.Debug().Str("event", "status information").Dict("event_data", zerolog.Dict().Int("gsm_signal", st.GSMSignal).Int("voltage_level", st.Voltage).Bool("ACC", st.ACC).Bool("GPS", st.GPS)).Msg("")
-				gt06.write(statusOk(gt06.msg.Serial))
-			case byte(gk310GPS):
-				loc := parseGK310GPSMessage(gt06.msg.Payload)
-				ci := zerolog.Dict().Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC)
-				ev := zerolog.Dict().Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed)
-				gt06.log.Debug().Str("event", "location update").Dict("event_data", ev.Bool("ACC", loc.ACC).Dict("cell_info", ci)).Msg("")
-				mps_speed := (float32(loc.Speed) * 1000) / 3600
-				gt06.store.Put(gt06.rid, loc.Latitude, loc.Longitude, 0.0, mps_speed, loc.Timestamp, tread)
-				gt06.state.Sublist.Send(gt06.rid, []byte{})
-				gt06.state.Stat.CounterIncr(1, tread)
-			case byte(informationTxPacket):
-				switch gt06.msg.Payload[0] {
-				case 0x04:
-					gt06.log.Debug().Str("event", "information packet").Dict("event_data", zerolog.Dict().Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:]))).Msg("")
-				default:
-					gt06.log.Debug().Str("event", "information packet").Hex("data", gt06.msg.Payload).Msg("ignoring unknown information packet")
-				}
+		switch gt06.msg.Protocol {
+		case byte(timeCheck):
+			gt06.log.Info().Str("event", "terminal time update").Msg("")
+			t := time.Now().UTC()
+			gt06.write(timeResponse(&t, gt06.msg.Serial))
+		case byte(statusInformation):
+			st := parseStatusInformation(gt06.msg.Payload)
+			gt06.log.Debug().Str("event", "status information").Dict("event_data", zerolog.Dict().Int("gsm_signal", st.GSMSignal).Int("voltage_level", st.Voltage).Bool("ACC", st.ACC).Bool("GPS", st.GPS)).Msg("")
+			gt06.write(statusOk(gt06.msg.Serial))
+		case byte(gk310GPS):
+			loc := parseGK310GPSMessage(gt06.msg.Payload)
+			ci := zerolog.Dict().Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC)
+			ev := zerolog.Dict().Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed)
+			gt06.log.Debug().Str("event", "location update").Dict("event_data", ev.Bool("ACC", loc.ACC).Dict("cell_info", ci)).Msg("")
+			mps_speed := (float32(loc.Speed) * 1000) / 3600
+			gt06.store.Put(gt06.rid, loc.Latitude, loc.Longitude, 0.0, mps_speed, loc.Timestamp, tread)
+			gt06.state.Sublist.Send(gt06.rid, []byte{})
+			gt06.state.Stat.CounterIncr(1, tread)
+		case byte(informationTxPacket):
+			switch gt06.msg.Payload[0] {
+			case 0x04:
+				gt06.log.Debug().Str("event", "information packet").Dict("event_data", zerolog.Dict().Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:]))).Msg("")
 			default:
-				gt06.log.Error().Hex("data", gt06.msg.Payload).Str("error", "unknown event protocol")
+				gt06.log.Debug().Str("event", "information packet").Hex("data", gt06.msg.Payload).Msg("ignoring unknown information packet")
 			}
-		} else if gt06.msg.Protocol == loginMessage {
-			sn := parseLoginMessage(gt06.msg.Payload)
-			rid, ok := gt06.server.Login("gt06", sn, gt06)
-			tlogin := time.Now()
-			if ok {
-				gt06.rid = rid
-				gt06.log.Info().Str("event", "login").Str("sn", sn).Str("rid", rid).Msg("login accepted")
-				gt06.state.Stat.ConnectEv(gt06.c.Created())
-				gt06.state.Stat.LoginEv(tlogin)
-				gt06.log = gt06.log.With().Str("rid", rid).Logger()
-				gt06.write(loginOk(gt06.msg.Serial))
-				atomic.StoreInt32(&gt06.logged_in, 1)
-			} else {
-				gt06.log.Error().Str("event", "login").Str("sn", sn).Str("error", "login rejected")
-				gt06.closeErr(errRejectedLogin)
-			}
-		} else {
-			gt06.log.Error().Str("error", "illegal state: first message not login message").Hex("protocol_code", []byte{gt06.msg.Protocol}).Hex("payload", gt06.msg.Payload).Msg("")
+		default:
+			gt06.log.Error().Hex("data", gt06.msg.Payload).Str("error", "unknown event protocol")
 		}
+
 		if gt06.c.Closed() {
-			return
+			break
 		}
 	}
-
+	gt06.state.Attached.Unlock()
 }
 
 func (gt06 *GT06) readMessage() {
-
 	var length int       //length field
 	var var_buf []byte   //start of variable length data
 	var frame_length int //from the beginning of gt06.buffer (including trailer 0x0d 0x0a)
@@ -188,7 +196,7 @@ func (gt06 *GT06) readMessage() {
 	//payload length is `length` - 5
 
 	if gt06.LogOpts.log_read {
-		gt06.log.Debug().Str("action", "read").Hex("data", gt06.buffer[:frame_length]).Msg("")
+		gt06.log.Debug().Str("operation", "read").Hex("data", gt06.buffer[:frame_length]).Msg("")
 	}
 	gt06.msg.Protocol = var_buf[0]
 	gt06.msg.Payload = var_buf[1 : length-4]

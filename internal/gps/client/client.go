@@ -1,6 +1,8 @@
 package client
 
 import (
+	"sync"
+
 	"nuha.dev/gpstracker/internal/gps/stat"
 	"nuha.dev/gpstracker/internal/util/wc"
 
@@ -15,7 +17,9 @@ type ClientInterface interface {
 	SetState(s *ClientState)
 }
 
+// I think this is thread safe
 type ClientState struct {
-	Stat    *stat.Stat
-	Sublist *sublist.MulSublist
+	Attached *sync.Mutex
+	Stat     *stat.Stat
+	Sublist  *sublist.MulSublist
 }

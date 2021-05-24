@@ -48,12 +48,13 @@ type Droid struct {
 
 var errRejectedLogin = errors.New("login rejected")
 
-func NewDroid(c *wc.Conn, server server.ServerInterface) *Droid {
+func NewDroid(c *wc.Conn, server server.ServerInterface, store store.Store) *Droid {
 	o := &Droid{c: c, s: server}
 	logger := log.With().Str("module", "droid").Uint64("cid", c.Cid()).Logger()
 	o.log = logger
 	o.login = loginMsg{}
 	o.loc = LocationMsg{}
+	o.store = store
 	return o
 }
 
@@ -84,49 +85,55 @@ func (dr *Droid) SetState(state *client.ClientState) {
 }
 
 func (dr *Droid) Run() {
+	msg, err := dr.c.ReadBytes('\n')
+	if err != nil {
+		dr.log.Error().Err(err).Msg("error while reading")
+		dr.closeErr(err)
+		return
+	}
+	err = json.Unmarshal(msg, &dr.login)
+	if err != nil {
+		dr.log.Error().Err(err).Msg("error parsing login message")
+		dr.closeErr(err)
+		return
+	}
+	dr.log.Info().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
+	rid, ok := dr.s.Login(dr.login.Family, dr.login.Serial, dr)
+	tlogin := time.Now()
+	if ok {
+		atomic.StoreInt32(&dr.logged_in, 1)
+		dr.state.Stat.ConnectEv(dr.c.Created())
+		dr.state.Stat.LoginEv(tlogin)
+		dr.rid = rid
+		dr.log = dr.log.With().Str("rid", rid).Logger()
+		dr.log.Info().Msg("login successful")
+
+	} else {
+		dr.closeErr(errRejectedLogin)
+		dr.log.Err(errRejectedLogin).Msg("login rejected")
+		return
+	}
+
+	dr.state.Attached.Lock()
 	for {
 		msg, err := dr.c.ReadBytes('\n')
 		tread := time.Now()
 		if err != nil {
 			dr.log.Error().Err(err).Msg("error while reading")
 			dr.closeErr(err)
-			return
+			break
 		}
-		if dr.logged_in != 1 {
-			err := json.Unmarshal(msg, &dr.login)
-			if err != nil {
-				dr.log.Error().Err(err).Msg("error parsing login message")
-				dr.closeErr(err)
-				return
-			}
-			dr.log.Info().Str("event", "login").Str("family", dr.login.Family).Str("serial", dr.login.Serial).Msg("")
-			rid, ok := dr.s.Login(dr.login.Family, dr.login.Serial, dr)
-			tlogin := time.Now()
-			if ok {
-				atomic.StoreInt32(&dr.logged_in, 1)
-				dr.state.Stat.ConnectEv(dr.c.Created())
-				dr.state.Stat.LoginEv(tlogin)
-				dr.rid = rid
-				dr.log = dr.log.With().Str("rid", rid).Logger()
-				dr.log.Info().Msg("login successful")
-
-			} else {
-				dr.closeErr(errRejectedLogin)
-				dr.log.Err(errRejectedLogin).Msg("login rejected")
-				return
-			}
-		} else {
-			err := json.Unmarshal(msg, &dr.loc)
-			if err != nil {
-				dr.log.Error().Err(err).Msg("error parsing location data")
-				dr.closeErr(err)
-				return
-			}
-			dr.log.Debug().Str("event", "location update").RawJSON("event_data", msg).Msg("")
-			dr.state.Sublist.Send(dr.rid, []byte{})
-			dr.state.Stat.CounterIncr(1, tread)
-			dr.store.Put(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.Altitude, dr.loc.Speed, dr.loc.GpsTime, tread)
+		err = json.Unmarshal(msg, &dr.loc)
+		if err != nil {
+			dr.log.Error().Err(err).Msg("error parsing location data")
+			dr.closeErr(err)
+			break
 		}
+		dr.log.Debug().Str("event", "location update").RawJSON("event_data", msg).Msg("")
+		dr.state.Sublist.Send(dr.rid, []byte{})
+		dr.state.Stat.CounterIncr(1, tread)
+		dr.store.Put(dr.rid, dr.loc.Latitude, dr.loc.Longitude, dr.loc.Altitude, dr.loc.Speed, dr.loc.GpsTime, tread)
 
 	}
+	dr.state.Attached.Unlock()
 }

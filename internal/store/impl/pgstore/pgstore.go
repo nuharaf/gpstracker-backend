@@ -47,7 +47,7 @@ func NewStore(db *pgxpool.Pool, table string) *Store {
 
 }
 
-func (st *Store) Put(rid string, lon float64, lat float64, alt float32, gpst time.Time, srvt time.Time) {
+func (st *Store) Put(rid string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
 	rec := record{rid: rid, lon: lon, lat: lat, alt: alt, gpst: gpst, srvt: srvt}
 	select {
 	case st.ch <- rec:
@@ -104,6 +104,6 @@ func (st *Store) flush(data []record) {
 	if err != nil {
 		st.logger.Err(err).Msg("Flushing error")
 	} else {
-		st.logger.Info().Str("action", "flush").Int("length", l).Dur("time_taken", time.Since(t0)).Msg("Flush successfull")
+		st.logger.Debug().Str("action", "flush").Int("length", l).Dur("time_taken", time.Since(t0)).Msg("Flush successfull")
 	}
 }

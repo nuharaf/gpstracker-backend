@@ -17,6 +17,8 @@ import (
 	"nuha.dev/gpstracker/internal/gps/stat"
 	"nuha.dev/gpstracker/internal/gps/sublist"
 	"nuha.dev/gpstracker/internal/store"
+	"nuha.dev/gpstracker/internal/store/impl/logstore"
+	"nuha.dev/gpstracker/internal/store/impl/pgstore"
 	"nuha.dev/gpstracker/internal/util/wc"
 )
 
@@ -66,6 +68,7 @@ type ServerConfig struct {
 	// YamuxTunnelAddr    string
 	MockLogin bool
 	// YamuxToken         string
+	MockStore bool
 }
 
 func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
@@ -73,98 +76,14 @@ func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
 	s := &Server{}
 	// s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
 	s.logger = log.With().Str("module", "server").Logger()
-	var err error
-	if err != nil {
-		s.logger.Err(err)
-		return nil
+	s.config = config
+	if config.MockStore {
+		s.store = logstore.NewStore()
+	} else {
+		s.store = pgstore.NewStore(db, "location")
 	}
 	return s
 }
-
-// func (s *Server) runMuxListerner() {
-// 	runLoop := func() {
-// 		defer s.logger.Error().Msg("yamux tunnel stopped")
-// 		s.logger.Info().Msgf("dialling tunnel %s", s.config.YamuxTunnelAddr)
-// 		yconn, err := net.Dial("tcp", s.config.YamuxTunnelAddr)
-// 		if err != nil {
-// 			s.logger.Err(err).Msg("unable to dial yamux server")
-// 			return
-// 		}
-// 		s.logger.Info().Msg("dialled yamux server")
-// 		_, err = yconn.Write([]byte(s.config.YamuxToken))
-// 		if err != nil {
-// 			yconn.Close()
-// 			s.logger.Err(err).Msg("unable to authenticate with yamux server")
-// 			return
-// 		}
-// 		status := []byte{0}
-// 		_, err = yconn.Read(status)
-// 		if err != nil {
-// 			yconn.Close()
-// 			s.logger.Err(err).Msg("unable to authenticate with yamux server")
-// 			return
-// 		}
-// 		if status[0] == '+' {
-// 			s.logger.Info().Msg("yamux tunnel auth accepted")
-// 		} else {
-// 			s.logger.Error().Msg("yamux tunnel auth rejected")
-// 			return
-// 		}
-// 		s.logger.Info().Msg("creating yamux session ...")
-// 		session, err := yamux.Client(yconn, nil)
-// 		if err != nil {
-// 			s.logger.Err(err).Msg("failed to create yamux session")
-// 			return
-// 		}
-// 		s.logger.Info().Msg("yamux session created")
-
-// 		for {
-// 			s.logger.Info().Msg("accepting new yamux stream ...")
-// 			tconn, err := session.Accept()
-// 			if err != nil {
-// 				s.logger.Err(err).Msg("failed to accept yamux stream")
-// 				return
-// 			}
-// 			// cid := atomic.AddUint64(&s.cid_counter, 1)
-// 			go func() {
-// 				r := bufio.NewReader(tconn)
-// 				s.logger.Info().Msg("reading forwarded remote address info from yamux stream")
-// 				raddr, err := r.ReadString('\n')
-// 				if err != nil {
-// 					s.logger.Err(err).Msg("failed reading remote address info")
-// 					tconn.Close()
-// 					return
-// 				}
-// 				s.handleConn(conn, raddr)
-// 				// wconn := wc.NewWrappedConn(tconn, raddr, cid, log.Logger)
-// 				// s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
-// 				// client, err := s.newClient(wconn)
-// 				// s.saveClient(cid, client)
-// 				// if err == nil {
-// 				// 	s.logger.Info().Uint64("cid", cid).Msg("running client")
-// 				// 	client.Run()
-// 				// } else {
-// 				// 	s.logger.Info().Uint64("cid", cid).Msg("failed to create client")
-// 				// }
-// 				// s.logger.Info().Uint64("cid", cid).Msg("client stopped")
-// 				// s.delClient(cid)
-// 			}()
-
-// 		}
-// 	}
-
-// 	for {
-// 		t0 := time.Now()
-// 		runLoop()
-// 		d := time.Since(t0)
-// 		if d > 10*time.Second {
-// 			time.Sleep(1 * time.Second)
-// 		} else {
-// 			time.Sleep(5 * time.Second)
-// 		}
-
-// 	}
-// }
 
 func (s *Server) runDirectListener() {
 	s.logger.Info().Str("addr", s.config.DirectListenerAddr).Msg("starting direct port listener")
@@ -184,18 +103,8 @@ func (s *Server) runDirectListener() {
 
 		go func() {
 			s.handleConn(conn, conn.RemoteAddr().String())
-			// wconn := wc.NewWrappedConn(conn, conn.RemoteAddr().String(), cid, log.Logger)
-			// s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
-			// client, err := s.NewClient(wconn)
-			// s.saveClient(cid, client)
-			// if err == nil {
-			// 	s.logger.Info().Uint64("cid", cid).Msg("running client")
-			// 	client.Run()
-			// }
-			// s.delClient(cid)
 		}()
 	}
-
 }
 
 func (s *Server) saveClient(cid uint64, c client.ClientInterface) {
@@ -211,18 +120,8 @@ func (s *Server) delClient(cid uint64) {
 }
 
 func (s *Server) Run() {
-	// var wg sync.WaitGroup
-
 	s.runDirectListener()
 
-	// if s.config.YamuxTunnelAddr != "" {
-	// 	wg.Add(1)
-	// 	go func() {
-	// 		s.runMuxListerner()
-	// 		wg.Done()
-	// 	}()
-	// }
-	// wg.Wait()
 }
 
 func (s *Server) GetClientState(rid string) *client.ClientState {
@@ -237,80 +136,6 @@ func (s *Server) GetClientState(rid string) *client.ClientState {
 	return state
 }
 
-// func (s *Server) Subscribe(rids []string, sub subscriber.Subscriber) {
-// 	s.client_list.mu.Lock()
-// 	for _, v := range rids {
-// 		saved_client, ok := s.client_list.list[v]
-// 		if ok {
-// 			saved_client.Subscribe(sub)
-// 		}
-// 	}
-// 	s.client_list.mu.Unlock()
-// }
-
-// Subscribe read the msubs, but write to the subs
-// func (s *Server) Subscribe(rid, subname string, sub gps.Subscriber) error {
-// 	s.msubs.mu.RLock()
-// 	slist, ok := s.msubs.list[rid]
-// 	s.msubs.mu.RUnlock()
-
-// 	if ok {
-// 		slist.mu.Lock()
-// 		slist.list[subname] = sub
-// 		slist.mu.Unlock()
-// 	} else if !ok && s.static_pub_list {
-// 		s.logger.Warn().Str("publisher_rid", rid).Bool("static_pub_list", s.static_pub_list).Msg("Unable to subscibre to non-existant publisher, possibly misconfiguration")
-// 		return errors.New("publisher doesnt exist")
-// 	} else {
-// 		new_slist := &subs{mu: sync.Mutex{}, list: make(map[string]gps.Subscriber)}
-// 		new_slist.list[subname] = sub
-// 		s.msubs.mu.Lock()
-// 		s.msubs.list[rid] = new_slist
-// 		s.msubs.mu.Unlock()
-// 	}
-// 	return nil
-// }
-
-//called from gps client goroutine
-// func (s *Server) Location(rid string, lat, lon float64, t time.Time) {
-// 	// s.locationStore(&gps.Location{lat: lat, lon: lon, t: t})
-// 	s.broadcast(rid, lat, lon, t)
-// }
-
-// func (s *Server) broadcast(rid string, lat, lon float64, t time.Time) {
-// 	//get subscription list for this rid
-// 	s.msubs.mu.RLock()
-// 	slist, ok := s.msubs.list[rid]
-// 	s.msubs.mu.RUnlock()
-
-// 	if ok {
-// 		//subscription list for this rid exist
-// 		d, _ := json.Marshal(struct {
-// 			Latitude  float64
-// 			Longitude float64
-// 			Timestamp time.Time
-// 		}{Latitude: lat, Longitude: lon, Timestamp: t})
-// 		//Iterate subscription list . Hold lock because web client can mutate the list
-// 		slist.mu.Lock()
-// 		for subname, sub := range slist.list {
-// 			err := sub.Push(d)
-// 			if err != nil {
-// 				delete(slist.list, subname)
-// 			}
-// 		}
-// 		slist.mu.Unlock()
-// 	} else if !ok && !s.static_pub_list {
-// 		//subscription list for this rid does not exist, initialize with empty list
-// 		new_slist := &subs{mu: sync.Mutex{}, list: make(map[string]gps.Subscriber)}
-// 		//hold lock because we will mutate msubs
-// 		s.msubs.mu.Lock()
-// 		s.msubs.list[rid] = new_slist
-// 		s.msubs.mu.Unlock()
-// 	} else {
-// 		s.logger.Warn().Str("publisher_rid", rid).Bool("static_pub_list", s.static_pub_list).Msg("Can't create list for unregistered publisher,possibly misconfiguration")
-// 	}
-// }
-
 func (s *Server) Login(family, serial string, c client.ClientInterface) (rid string, ok bool) {
 	if s.config.MockLogin {
 		rid = family + serial
@@ -319,7 +144,7 @@ func (s *Server) Login(family, serial string, c client.ClientInterface) (rid str
 		err := s.db.QueryRow(context.Background(), sqlStmt, family, serial).Scan(rid)
 		if err != nil {
 			if err == pgx.ErrNoRows {
-				s.logger.Info().Str("action", "login").Str("family", family).Str("sn", serial).Msg("tracker not found")
+				s.logger.Info().Str("family", family).Str("sn", serial).Msg("tracker not found")
 				return "", false
 			} else {
 				s.logger.Error().Err(err).Msg("error while querying database")
@@ -343,27 +168,27 @@ func (s *Server) handleConn(conn net.Conn, raddr string) {
 	wconn := wc.NewWrappedConn(conn, raddr, cid, log.Logger)
 	s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
 	client, err := s.newClient(wconn)
-	s.saveClient(cid, client)
 	if err == nil {
+		s.saveClient(cid, client)
 		s.logger.Info().Uint64("cid", cid).Msg("running client")
 		client.Run()
+		s.logger.Info().Uint64("cid", cid).Msg("client stopped")
+		s.delClient(cid)
 	} else {
-		s.logger.Info().Uint64("cid", cid).Msg("failed to create client")
+		s.logger.Error().Uint64("cid", cid).Msg("failed to create client")
 	}
-	s.logger.Info().Uint64("cid", cid).Msg("client stopped")
-	s.delClient(cid)
 }
 
 func (s *Server) newClient(conn *wc.Conn) (client.ClientInterface, error) {
 	// conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	st, err := conn.Peek(1)
 	if err != nil {
-		s.logger.Log().Err(err)
+		s.logger.Err(err).Msg("error while peeking from connection")
 		return nil, err
 	}
 	ip, port, _ := net.SplitHostPort(conn.RemoteAddr())
 	if st[0] == '{' {
-		droid := droid.NewDroid(conn, s)
+		droid := droid.NewDroid(conn, s, s.store)
 		s.logger.Info().Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("new droid client")
 		return droid, nil
 	} else if st[0] == 0x78 {
