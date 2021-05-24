@@ -41,8 +41,8 @@ func NewGT06(c *wc.Conn, server server.ServerInterface, store store.Store) *GT06
 	logger := log.With().Str("module", "gt06").Uint64("cid", c.Cid()).Logger()
 	o.log = logger
 	o.LogOpts = LogOpts{log_read: false, log_write: false}
-	o.server = server
 	o.store = store
+	o.server = server
 	return o
 }
 

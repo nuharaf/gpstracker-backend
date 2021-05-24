@@ -55,6 +55,7 @@ func NewDroid(c *wc.Conn, server server.ServerInterface, store store.Store) *Dro
 	o.login = loginMsg{}
 	o.loc = LocationMsg{}
 	o.store = store
+	o.s = server
 	return o
 }
 
