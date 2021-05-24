@@ -74,6 +74,8 @@ type ServerConfig struct {
 func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
 
 	s := &Server{}
+	s.conn_list = conn_list{mu: sync.Mutex{}, list: make(map[uint64]client.ClientInterface)}
+	s.clientstate_list = clientstate_list{mu: sync.Mutex{}, list: make(map[string]*client.ClientState)}
 	// s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
 	s.logger = log.With().Str("module", "server").Logger()
 	s.config = config
