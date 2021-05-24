@@ -2,7 +2,9 @@ package serverimpl
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -140,7 +142,8 @@ func (s *Server) GetClientState(rid string) *client.ClientState {
 
 func (s *Server) Login(family, serial string, c client.ClientInterface) (rid string, ok bool) {
 	if s.config.MockLogin {
-		rid = family + serial
+		sum := sha256.Sum256([]byte(family + serial))
+		rid = fmt.Sprintf("%x", sum)
 	} else {
 		sqlStmt := `SELECT id FROM public."tracker" where family = $1 AND serial_number =$2`
 		err := s.db.QueryRow(context.Background(), sqlStmt, family, serial).Scan(rid)
@@ -152,6 +155,8 @@ func (s *Server) Login(family, serial string, c client.ClientInterface) (rid str
 				s.logger.Error().Err(err).Msg("error while querying database")
 				return "", false
 			}
+		} else {
+			s.logger.Info().Str("family", family).Str("sn", serial).Msgf("tracker found with rid : %s", rid)
 		}
 	}
 	s.clientstate_list.mu.Lock()
