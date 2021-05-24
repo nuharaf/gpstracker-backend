@@ -9,8 +9,12 @@ import (
 
 func main() {
 	debug := flag.Bool("debug", false, "sets log level to debug")
+	listen_addr := flag.String("address", ":5555", "address to listen to")
 	flag.Parse()
-	zerolog.SetGlobalLevel(zerolog.TraceLevel)
-	srv := gps.NewServer(nil, &gps.ServerConfig{MockLogin: true})
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if *debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+	srv := gps.NewServer(nil, &gps.ServerConfig{MockLogin: true, DirectListenerAddr: *listen_addr, MockStore: true})
 	srv.Run()
 }
