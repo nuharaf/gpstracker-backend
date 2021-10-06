@@ -3,6 +3,7 @@ package gt06
 import (
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -24,7 +25,7 @@ type GT06 struct {
 	LogOpts
 	server    server.ServerInterface
 	logged_in int32
-	rid       string //registration_id
+	tid       uint64
 	state     *client.ClientState
 	store     store.Store
 }
@@ -48,8 +49,11 @@ func NewGT06(c *wc.Conn, server server.ServerInterface, store store.Store) *GT06
 
 func (gt06 *GT06) closeErr(err error) {
 	gt06.err = err
-	gt06.state.Stat.DisconnectEv(time.Now())
 	gt06.c.Close()
+	if gt06.state != nil {
+		gt06.state.Stat.DisconnectEv(time.Now().UTC())
+	}
+
 }
 
 func (gt06 *GT06) write(d []byte) {
@@ -90,20 +94,24 @@ func (gt06 *GT06) Run() {
 	if gt06.c.Closed() {
 		return
 	}
+
 	if gt06.msg.Protocol == loginMessage {
-		sn := parseLoginMessage(gt06.msg.Payload)
-		rid, ok := gt06.server.Login("gt06", sn, gt06)
-		tlogin := time.Now()
+		sn, err := strconv.ParseUint(parseLoginMessage(gt06.msg.Payload), 10, 64)
+		if err != nil {
+			gt06.closeErr(errRejectedLogin)
+			return
+		}
+		ok := gt06.server.Login("imei", sn, gt06)
 		if ok {
-			gt06.rid = rid
-			gt06.log.Info().Str("event", "login").Str("sn", sn).Str("rid", rid).Msg("login accepted")
+			gt06.tid = gt06.state.TrackerId
+			gt06.log.Info().Str("event", "login").Uint64("sn", sn).Uint64("tid", gt06.tid).Msg("login accepted")
 			gt06.state.Stat.ConnectEv(gt06.c.Created())
-			gt06.state.Stat.LoginEv(tlogin)
-			gt06.log = gt06.log.With().Str("rid", rid).Logger()
+			gt06.log = gt06.log.With().Uint64("tid", gt06.tid).Logger()
 			gt06.write(loginOk(gt06.msg.Serial))
 			atomic.StoreInt32(&gt06.logged_in, 1)
+
 		} else {
-			gt06.log.Error().Str("event", "login").Str("sn", sn).Str("error", "login rejected")
+			gt06.log.Error().Str("event", "login").Uint64("sn", sn).Str("error", "login rejected")
 			gt06.closeErr(errRejectedLogin)
 			return
 		}
@@ -112,12 +120,14 @@ func (gt06 *GT06) Run() {
 	}
 
 	gt06.state.Attached.Lock()
+	fsn := gt06.state.FSN
 	for {
 		gt06.readMessage()
-		tread := time.Now()
 		if gt06.c.Closed() {
 			break
 		}
+		tread := time.Now().UTC()
+		gt06.state.Stat.UpdateEv(tread)
 		switch gt06.msg.Protocol {
 		case byte(timeCheck):
 			gt06.log.Info().Str("event", "terminal time update").Msg("")
@@ -125,17 +135,20 @@ func (gt06 *GT06) Run() {
 			gt06.write(timeResponse(&t, gt06.msg.Serial))
 		case byte(statusInformation):
 			st := parseStatusInformation(gt06.msg.Payload)
-			gt06.log.Debug().Str("event", "status information").Dict("event_data", zerolog.Dict().Int("gsm_signal", st.GSMSignal).Int("voltage_level", st.Voltage).Bool("ACC", st.ACC).Bool("GPS", st.GPS)).Msg("")
 			gt06.write(statusOk(gt06.msg.Serial))
+			m := map[string]interface{}{"gsm_signal": st.GSMSignal, "voltage": st.Voltage, "ACC": st.ACC, "GPS": st.GPS}
+			gt06.log.Debug().Fields(m)
+			gt06.state.AddKV(m)
 		case byte(gk310GPS):
 			loc := parseGK310GPSMessage(gt06.msg.Payload)
 			ci := zerolog.Dict().Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC)
 			ev := zerolog.Dict().Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed)
 			gt06.log.Debug().Str("event", "location update").Dict("event_data", ev.Bool("ACC", loc.ACC).Dict("cell_info", ci)).Msg("")
 			mps_speed := (float32(loc.Speed) * 1000) / 3600
-			gt06.store.Put(gt06.rid, loc.Latitude, loc.Longitude, 0.0, mps_speed, loc.Timestamp, tread)
-			gt06.state.Sublist.Send(gt06.rid, []byte{})
-			gt06.state.Stat.CounterIncr(1, tread)
+			gt06.store.Put(fsn, loc.Latitude, loc.Longitude, -1, mps_speed, loc.Timestamp, tread)
+			gt06.state.Sublist.MarshalSend(gt06.tid, loc.Latitude, loc.Longitude, mps_speed, loc.Timestamp, tread)
+			gt06.state.UpdateLocation(loc.Longitude, loc.Latitude, loc.Timestamp.UTC())
+
 		case byte(informationTxPacket):
 			switch gt06.msg.Payload[0] {
 			case 0x04:

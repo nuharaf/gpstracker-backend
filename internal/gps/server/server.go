@@ -5,9 +5,9 @@ import (
 )
 
 type ServerInterface interface {
-	Login(family, serial string, c client.ClientInterface) (rid string, ok bool)
+	Login(sn_type string, serial uint64, c client.ClientInterface) (ok bool)
 	// Subscribe(rids []string, sub subscriber.Subscriber)
-	GetClientState(rid string) *client.ClientState
+	// GetGpsClientState(tracker_id uint64) *client.ClientState
 }
 
 // type LocationUpdate struct {

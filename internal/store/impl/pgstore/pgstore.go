@@ -2,6 +2,7 @@ package pgstore
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v4"
@@ -11,99 +12,141 @@ import (
 )
 
 type Store struct {
-	ch     chan record
-	timer  *time.Timer
+	config *StoreConfig
+	cond   *sync.Cond
+	wlock  *sync.Mutex
+	rbuf   buffer
+	wbuf   buffer
 	dbc    *pgxpool.Conn
 	dbp    *pgxpool.Pool
 	logger zerolog.Logger
-	dur    time.Duration
 	table  string
 }
 
+type StoreConfig struct {
+	BufSize     int
+	TickerDur   time.Duration
+	MaxAgeFlush time.Duration
+}
+
+type buffer struct {
+	seq uint64
+	t1  time.Time
+	t2  time.Time
+	buf []record
+}
+
+func new_buffer(seq uint64, len int) buffer {
+	return buffer{seq: seq, buf: make([]record, 0, len)}
+}
+
 type record struct {
-	rid  string
-	lon  float64
-	lat  float64
-	alt  float32
-	gpst time.Time
-	srvt time.Time
+	fsn   string
+	lon   float64
+	lat   float64
+	alt   float32
+	speed float32
+	gpst  time.Time
+	srvt  time.Time
 }
 
-func NewStore(db *pgxpool.Pool, table string) *Store {
-	var err error
+func NewStore(db *pgxpool.Pool, table string, config *StoreConfig) *Store {
 	o := &Store{}
-	o.dur = 2 * time.Second
+	o.config = config
 	o.table = table
-	o.ch = make(chan record, 10)
-	o.timer = time.NewTimer(o.dur)
 	o.dbp = db
-	o.dbc, err = db.Acquire(context.Background())
 	o.logger = log.With().Str("module", "store").Logger()
-	if err != nil {
-		return nil
-	}
-	go o.writer()
+	o.wbuf = new_buffer(0, o.config.BufSize)
+	o.wlock = &sync.Mutex{}
+	o.cond = sync.NewCond(&sync.Mutex{})
 	return o
-
 }
 
-func (st *Store) Put(rid string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
-	rec := record{rid: rid, lon: lon, lat: lat, alt: alt, gpst: gpst, srvt: srvt}
-	select {
-	case st.ch <- rec:
-	default:
-		st.logger.Error().Msg("Store put blocked")
+func (st *Store) Run() {
+	var err error
+	st.dbc, err = st.dbp.Acquire(context.Background())
+	if err != nil {
+		return
+	}
+	go st.timer_flusher()
+	go st.handle()
+}
+
+func (st *Store) timer_flusher() {
+	ticker := time.NewTicker(st.config.TickerDur)
+	for t := range ticker.C {
+		st.wlock.Lock()
+		if len(st.wbuf.buf) != 0 && t.Sub(st.wbuf.t1) > st.config.MaxAgeFlush {
+			st.flush()
+		}
+		st.wlock.Unlock()
 	}
 }
 
-func (st *Store) rearmTimer() {
-	if !st.timer.Stop() {
-		<-st.timer.C
+func (st *Store) Put(serial_number string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
+	rec := record{fsn: serial_number, lon: lon, lat: lat, alt: alt, speed: speed, gpst: gpst, srvt: srvt}
+	st.wlock.Lock()
+	if len(st.wbuf.buf) == 0 {
+		st.wbuf.t1 = time.Now().UTC()
 	}
-	st.timer.Reset(10 * time.Second)
+	st.wbuf.buf = append(st.wbuf.buf, rec)
+	if len(st.wbuf.buf) == st.config.BufSize {
+		st.flush()
+	}
+	st.wlock.Unlock()
 }
 
-func (st *Store) writer() {
-	buffer := make([]record, 20)
-	c := 0
+func (st *Store) flush() {
+	next := st.wbuf.seq + 1
+	st.wbuf.t2 = time.Now().UTC()
+	st.cond.L.Lock()
+	st.rbuf = st.wbuf
+	st.cond.L.Unlock()
+	st.cond.Signal()
+	st.wbuf = new_buffer(next, st.config.BufSize)
+
+}
+
+// func (st *Store) flush(data []record) {
+// 	l := len(data)
+// 	t0 := time.Now()
+// 	_, err := st.dbc.CopyFrom(context.Background(),
+// 		pgx.Identifier{st.table},
+// 		[]string{"fsn", "longitude", "latitude", "altitude", "speed", "gps_time", "server_time"},
+// 		pgx.CopyFromSlice(len(data), func(i int) ([]interface{}, error) {
+// 			d := data[i]
+// 			return []interface{}{d.fsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil
+// 		}))
+
+// 	if err != nil {
+// 		st.logger.Err(err).Msg("Flushing error")
+// 	} else {
+// 		st.logger.Debug().Str("action", "flush").Int("length", l).Dur("time_taken", time.Since(t0)).Msg("Flush successfull")
+// 	}
+// }
+
+func (st *Store) handle() {
+	var err error
+	st.logger.Info().Msg("starting flusher task")
 	for {
-		select {
-		case r := <-st.ch:
-			buffer[c] = r
-			c = c + 1
-			if c == len(buffer) {
-				st.logger.Debug().Msg("Flush due to full buffer")
-				st.flush(buffer[:c])
-				c = 0
-				st.rearmTimer()
-			}
-		case <-st.timer.C:
-			if c != 0 {
-				st.logger.Debug().Msg("Flush due to expired timer")
-				st.flush(buffer[:c])
-				c = 0
-			} else {
-				st.logger.Debug().Msg("Timer expired but no data to flush")
-			}
-
+		st.cond.L.Lock()
+		st.cond.Wait()
+		st.logger.Debug().Msg("flusher task signalled")
+		buf := st.rbuf
+		st.cond.L.Unlock()
+		t1 := time.Now()
+		_, err = st.dbc.CopyFrom(context.Background(),
+			pgx.Identifier{st.table},
+			[]string{"fsn", "longitude", "latitude", "altitude", "speed", "gps_time", "server_time"},
+			pgx.CopyFromSlice(len(buf.buf), func(i int) ([]interface{}, error) {
+				d := buf.buf[i]
+				return []interface{}{d.fsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil
+			}))
+		if err != nil {
+			st.logger.Err(err).Msg("flush error")
+		} else {
+			st.logger.Debug().Str("action", "flush").Int("length", len(buf.buf)).Dur("time_taken", time.Since(t1)).Msg("flush successfull")
 		}
 	}
-}
 
-func (st *Store) flush(data []record) {
-	l := len(data)
-	t0 := time.Now()
-	_, err := st.dbc.CopyFrom(context.Background(),
-		pgx.Identifier{st.table},
-		[]string{"rid", "longitude", "latitude", "altitude", "gps_time", "server_time"},
-		pgx.CopyFromSlice(len(data), func(i int) ([]interface{}, error) {
-			d := data[i]
-			return []interface{}{d.rid, d.lon, d.lat, d.alt, d.gpst, d.srvt}, nil
-		}))
-
-	if err != nil {
-		st.logger.Err(err).Msg("Flushing error")
-	} else {
-		st.logger.Debug().Str("action", "flush").Int("length", l).Dur("time_taken", time.Since(t0)).Msg("Flush successfull")
-	}
 }

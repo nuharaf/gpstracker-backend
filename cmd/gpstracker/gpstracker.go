@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"sync"
 
 	"net/http"
 	"time"
@@ -13,9 +12,8 @@ import (
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/rs/zerolog/log"
 	"github.com/spf13/viper"
-	"nuha.dev/gpstracker/internal/login"
-	"nuha.dev/gpstracker/internal/service"
-	"nuha.dev/gpstracker/internal/webstream"
+	"nuha.dev/gpstracker/internal/web/login"
+	"nuha.dev/gpstracker/internal/web/service"
 )
 
 func main() {
@@ -67,30 +65,32 @@ func main() {
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	ws_server := webstream.NewWebstream(3334)
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		_ = s1.ListenAndServe()
-		wg.Done()
-	}()
-	wg.Add(1)
-	go func() {
-		ws_server.Run()
-		wg.Done()
-	}()
-	wg.Wait()
+	_ = s1.ListenAndServe()
+	// srv := gps.NewServer(nil, &gps.ServerConfig{MockLogin: true, DirectListenerAddr: *listen_addr, MockStore: true})
+	// ws_server := webstream.NewWebstream(":3334")
+	// var wg sync.WaitGroup
+	// wg.Add(1)
+	// go func() {
+	// 	_ = s1.ListenAndServe()
+	// 	wg.Done()
+	// }()
+	// wg.Add(1)
+	// go func() {
+	// 	ws_server.Run()
+	// 	wg.Done()
+	// }()
+	// wg.Wait()
 }
 
-func xsrf_verify(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hsrf := r.Header.Get("X-XSRF-TOKEN")
-		ct, err1 := r.Cookie("GSURF")
-		_, err2 := r.Cookie("GSESS")
-		if err1 != nil || err2 != nil || hsrf != ct.Value {
-			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
+// func xsrf_verify(next http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		hsrf := r.Header.Get("X-XSRF-TOKEN")
+// 		ct, err1 := r.Cookie("GSURF")
+// 		_, err2 := r.Cookie("GSESS")
+// 		if err1 != nil || err2 != nil || hsrf != ct.Value {
+// 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
+// 			return
+// 		}
+// 		next.ServeHTTP(w, r)
+// 	})
+// }

@@ -2,12 +2,12 @@ package serverimpl
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
-	"fmt"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
@@ -16,11 +16,7 @@ import (
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/droid"
 	"nuha.dev/gpstracker/internal/gps/gt06"
-	"nuha.dev/gpstracker/internal/gps/stat"
-	"nuha.dev/gpstracker/internal/gps/sublist"
 	"nuha.dev/gpstracker/internal/store"
-	"nuha.dev/gpstracker/internal/store/impl/logstore"
-	"nuha.dev/gpstracker/internal/store/impl/pgstore"
 	"nuha.dev/gpstracker/internal/util/wc"
 )
 
@@ -51,7 +47,32 @@ type conn_list struct {
 
 type clientstate_list struct {
 	mu   sync.Mutex
-	list map[string]*client.ClientState
+	list map[uint64]*client.ClientState
+}
+
+type ClientStatus struct {
+	TrackerId     uint64    `json:"tracker_id"`
+	FSN           string    `json:"fsn"`
+	LastConnect   time.Time `json:"last_connect,omitempty"`
+	LastDisc      time.Time `json:"last_disconnect,omitempty"`
+	LastUpdate    time.Time `json:"last_update,omitempty"`
+	LastLatitude  float64   `json:"last_latitude,omitempty"`
+	LastLongitude float64   `json:"last_longitude,omitempty"`
+	LastGpsTime   time.Time `json:"last_timestamp,omitempty"`
+}
+
+type ClientStatusDetail struct {
+	TrackerId      uint64      `json:"tracker_id"`
+	FSN            string      `json:"fsn"`
+	ConnectHistory []time.Time `json:"connect_event"`
+	DiscHistory    []time.Time `json:"disconnect_event"`
+	UpdateHistory  []time.Time `json:"update_event"`
+	LastLocation   struct {
+		Latitude  float64   `json:"latitude"`
+		Longitude float64   `json:"longitude"`
+		GpsTime   time.Time `json:"timestamp"`
+	} `json:"last_known_location"`
+	AdditionalStatus map[string]interface{} `json:"additional_status,omitempty"`
 }
 
 type Server struct {
@@ -68,24 +89,21 @@ type ServerConfig struct {
 	DirectListenerAddr string
 	// EnableTunnel       bool
 	// YamuxTunnelAddr    string
-	MockLogin bool
+	// MockLogin bool
 	// YamuxToken         string
 	MockStore bool
 }
 
-func NewServer(db *pgxpool.Pool, config *ServerConfig) *Server {
+func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Server {
 
 	s := &Server{}
 	s.conn_list = conn_list{mu: sync.Mutex{}, list: make(map[uint64]client.ClientInterface)}
-	s.clientstate_list = clientstate_list{mu: sync.Mutex{}, list: make(map[string]*client.ClientState)}
+	s.clientstate_list = clientstate_list{mu: sync.Mutex{}, list: make(map[uint64]*client.ClientState)}
 	// s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
 	s.logger = log.With().Str("module", "server").Logger()
 	s.config = config
-	if config.MockStore {
-		s.store = logstore.NewStore()
-	} else {
-		s.store = pgstore.NewStore(db, "location")
-	}
+	s.db = db
+	s.store = store
 	return s
 }
 
@@ -128,45 +146,108 @@ func (s *Server) Run() {
 
 }
 
-func (s *Server) GetClientState(rid string) *client.ClientState {
+func (s *Server) GetGpsClientState(tid uint64) *client.ClientState {
 	var state *client.ClientState
 	s.clientstate_list.mu.Lock()
-	state, ok := s.clientstate_list.list[rid]
+	defer s.clientstate_list.mu.Unlock()
+	state, ok := s.clientstate_list.list[tid]
 	if !ok {
-		state := &client.ClientState{Stat: stat.NewStat(), Sublist: sublist.NewMulSublist()}
-		s.clientstate_list.list[rid] = state
+		var fsn string
+		//verify tracker id is in database
+		selectSql := `SELECT sn_type,serial,fsn FROM public."tracker" where id = $1`
+		err := s.db.QueryRow(context.Background(), selectSql, tid).Scan(&fsn)
+		if err != nil {
+			s.logger.Err(err).Msg("error while querying tracker by id")
+			return nil
+		}
+
+		state = client.NewClientState(tid, fsn)
+		s.clientstate_list.list[tid] = state
 	}
-	s.clientstate_list.mu.Unlock()
 	return state
 }
 
-func (s *Server) Login(family, serial string, c client.ClientInterface) (rid string, ok bool) {
-	if s.config.MockLogin {
-		sum := sha256.Sum256([]byte(family + serial))
-		rid = fmt.Sprintf("%x", sum)
-	} else {
-		sqlStmt := `SELECT id FROM public."tracker" where family = $1 AND serial_number =$2`
-		err := s.db.QueryRow(context.Background(), sqlStmt, family, serial).Scan(rid)
-		if err != nil {
-			if err == pgx.ErrNoRows {
-				s.logger.Info().Str("family", family).Str("sn", serial).Msg("tracker not found")
-				return "", false
-			} else {
-				s.logger.Error().Err(err).Msg("error while querying database")
-				return "", false
-			}
-		}
-	}
-	s.logger.Info().Str("family", family).Str("sn", serial).Msgf("tracker found with rid : %s", rid)
+func (s *Server) GetClientsStatus() []ClientStatus {
+
+	statistic := make([]ClientStatus, 0, 10)
 	s.clientstate_list.mu.Lock()
-	state, ok := s.clientstate_list.list[rid]
+	defer s.clientstate_list.mu.Unlock()
+
+	for tid, state := range s.clientstate_list.list {
+		c := ClientStatus{}
+		c.TrackerId = tid
+		c.LastConnect = state.Stat.ConnectLast()
+		c.LastDisc = state.Stat.DisconnectLast()
+		c.LastUpdate = state.Stat.UpdateLast()
+		c.FSN = state.FSN
+		lon, lat, gpstime := state.GetLastLocation()
+		c.LastLatitude = lat
+		c.LastLongitude = lon
+		c.LastGpsTime = gpstime
+		statistic = append(statistic, c)
+	}
+
+	return statistic
+}
+
+func (s *Server) GetClientStatus(tid uint64) *ClientStatusDetail {
+	s.clientstate_list.mu.Lock()
+	defer s.clientstate_list.mu.Unlock()
+	state, ok := s.clientstate_list.list[tid]
 	if !ok {
-		state = &client.ClientState{Stat: stat.NewStat(), Sublist: sublist.NewMulSublist()}
-		s.clientstate_list.list[rid] = state
+		return nil
+	} else {
+		c := &ClientStatusDetail{}
+		c.TrackerId = tid
+		c.ConnectHistory = state.Stat.ConnectList()
+		c.DiscHistory = state.Stat.DisconnectList()
+		c.UpdateHistory = state.Stat.UpdateList()
+		c.FSN = state.FSN
+		lon, lat, gpstime := state.GetLastLocation()
+		c.LastLocation.Latitude = lat
+		c.LastLocation.Longitude = lon
+		c.LastLocation.GpsTime = gpstime
+		c.AdditionalStatus = state.GetKV()
+		return c
+	}
+}
+
+func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) bool {
+
+	var tid uint64
+	var fsn string
+	selectSql := `SELECT id,fsn FROM public."tracker" where sn_type = $1 AND serial_number =$2`
+	err := s.db.QueryRow(context.Background(), selectSql, sn_type, serial).Scan(&tid, &fsn)
+
+	if err != nil {
+		if err == pgx.ErrNoRows {
+			s.logger.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msg("tracker not found, registering automatically")
+			//auto register tracker
+			fsn = sn_type + ":" + strconv.FormatUint(serial, 16)
+			insertSql := `INSERT INTO public.tracker (sn_type,serial_number,fsn,allow_connect,registered_at) VALUES ($1,$2,$3,true,now()) RETURNING id`
+			err := s.db.QueryRow(context.Background(), insertSql, sn_type, serial, fsn).Scan(&tid)
+			if err != nil {
+				s.logger.Error().Err(err).Msg("error while auto registering tracker")
+				return false
+			}
+		} else {
+			s.logger.Error().Err(err).Msg("error while querying tracker by serial")
+			return false
+		}
+	} else {
+		s.logger.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msgf("tracker found with tid : %d", tid)
+	}
+
+	s.clientstate_list.mu.Lock()
+
+	state, ok := s.clientstate_list.list[tid]
+	if !ok {
+		state = client.NewClientState(tid, fsn)
+		s.clientstate_list.list[tid] = state
 	}
 	s.clientstate_list.mu.Unlock()
 	c.SetState(state)
-	return rid, true
+	return true
 }
 
 func (s *Server) handleConn(conn net.Conn, raddr string) {

@@ -39,7 +39,6 @@ func (sm *svcMap) Add(tag string, i interface{}) {
 	sm.svcs[tag] = s
 }
 
-
 func (sm *svcMap) Call(tag string, request string) string {
 	svc := sm.svcs[tag]
 	var res []reflect.Value
@@ -99,7 +98,7 @@ type b2Struct struct {
 	Output string
 }
 
-func (s *Service) aSvc(x *a1Struct) (*a2Struct, error) {
+func (s *Service) aSvc(x *[]a1Struct) (*a2Struct, error) {
 	// return &a2Struct{Status: x.Data}, nil
 	return nil, errors.New("error bro")
 }
