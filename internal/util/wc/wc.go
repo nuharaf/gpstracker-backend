@@ -3,11 +3,12 @@ package wc
 import (
 	"bufio"
 	"io"
+
 	"net"
 	"sync/atomic"
 	"time"
 
-	"github.com/rs/zerolog"
+	"github.com/phuslu/log"
 )
 
 type Conn struct {
@@ -19,14 +20,16 @@ type Conn struct {
 	created  time.Time
 	byte_in  uint64
 	byte_out uint64
-	logger   zerolog.Logger
+	log      log.Logger
 }
 
-func NewWrappedConn(conn net.Conn, raddr string, cid uint64, logger zerolog.Logger) *Conn {
+func NewWrappedConn(conn net.Conn, raddr string, cid uint64) *Conn {
 	o := &Conn{reader: bufio.NewReader(conn), conn: conn, raddr: raddr, cid: cid}
 	o.created = time.Now().UTC()
-	o.logger = logger.With().Str("module", "wconn").Logger()
-	o.logger.Debug().Str("remote_address", o.raddr).Uint64("cid", o.cid).Msg("connection created")
+
+	o.log = log.DefaultLogger
+	o.log.Context = log.NewContext(nil).Str("module", "wconn").Value()
+	o.log.Debug().Str("remote_address", o.raddr).Uint64("cid", o.cid).Msg("connection created")
 	return o
 }
 
@@ -39,7 +42,7 @@ func (c *Conn) ReadBytes(delim byte) ([]byte, error) {
 func (c *Conn) Close() {
 	c.conn.Close()
 	atomic.StoreUint32(&c.closed, 1)
-	c.logger.Debug().Uint64("byte_in", c.byte_in).Uint64("byte_out", c.byte_out).Uint64("cid", c.cid).Msg("Connection closed")
+	c.log.Debug().Uint64("byte_in", c.byte_in).Uint64("byte_out", c.byte_out).Uint64("cid", c.cid).Msg("Connection closed")
 }
 
 func (c *Conn) Stat() (byte_in uint64, byte_out uint64) {

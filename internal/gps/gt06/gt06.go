@@ -7,8 +7,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/server"
 	"nuha.dev/gpstracker/internal/gps/subscriber"
@@ -21,7 +20,7 @@ type GT06 struct {
 	err    error
 	buffer []byte
 	msg    message
-	log    zerolog.Logger
+	log    log.Logger
 	LogOpts
 	server    server.ServerInterface
 	logged_in int32
@@ -39,8 +38,9 @@ var errRejectedLogin = errors.New("login rejected")
 
 func NewGT06(c *wc.Conn, server server.ServerInterface, store store.Store) *GT06 {
 	o := &GT06{c: c, buffer: make([]byte, 1000), store: store}
-	logger := log.With().Str("module", "gt06").Uint64("cid", c.Cid()).Logger()
-	o.log = logger
+
+	o.log = log.DefaultLogger
+	o.log.Context = log.NewContext(nil).Str("module", "gt06").Uint64("cid", c.Cid()).Value()
 	o.LogOpts = LogOpts{log_read: false, log_write: false}
 	o.store = store
 	o.server = server
@@ -62,7 +62,7 @@ func (gt06 *GT06) write(d []byte) {
 	}
 	_, err := gt06.c.Write(d)
 	if err != nil {
-		gt06.log.Err(err).Msg("Error while writing data")
+		gt06.log.Error().Err(err).Msg("Error while writing data")
 		gt06.closeErr(err)
 		return
 	}
@@ -106,7 +106,7 @@ func (gt06 *GT06) Run() {
 			gt06.tid = gt06.state.TrackerId
 			gt06.log.Info().Str("event", "login").Uint64("sn", sn).Uint64("tid", gt06.tid).Msg("login accepted")
 			gt06.state.Stat.ConnectEv(gt06.c.Created())
-			gt06.log = gt06.log.With().Uint64("tid", gt06.tid).Logger()
+			gt06.log.Context = log.NewContext(gt06.log.Context).Uint64("tid", gt06.tid).Value()
 			gt06.write(loginOk(gt06.msg.Serial))
 			atomic.StoreInt32(&gt06.logged_in, 1)
 
@@ -119,7 +119,7 @@ func (gt06 *GT06) Run() {
 		gt06.log.Error().Str("error", "illegal state: first message not login message").Hex("protocol_code", []byte{gt06.msg.Protocol}).Hex("payload", gt06.msg.Payload).Msg("")
 	}
 
-	gt06.state.Attached.Lock()
+	// gt06.state.Attached.Lock()
 	fsn := gt06.state.FSN
 	for {
 		gt06.readMessage()
@@ -137,13 +137,23 @@ func (gt06 *GT06) Run() {
 			st := parseStatusInformation(gt06.msg.Payload)
 			gt06.write(statusOk(gt06.msg.Serial))
 			m := map[string]interface{}{"gsm_signal": st.GSMSignal, "voltage": st.Voltage, "ACC": st.ACC, "GPS": st.GPS}
-			gt06.log.Debug().Fields(m)
+			gt06.log.Debug().Str("event", "status information").Dict("event_data", log.NewContext(nil).Fields(m).Value()).Msg("")
 			gt06.state.AddKV(m)
 		case byte(gk310GPS):
 			loc := parseGK310GPSMessage(gt06.msg.Payload)
-			ci := zerolog.Dict().Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC)
-			ev := zerolog.Dict().Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed)
-			gt06.log.Debug().Str("event", "location update").Dict("event_data", ev.Bool("ACC", loc.ACC).Dict("cell_info", ci)).Msg("")
+			ci := log.NewContext(nil).Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC).Value()
+			ev := log.NewContext(nil).Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed).Bool("ACC", loc.ACC).Value()
+			gt06.log.Debug().Str("event", "location update").Str("protocol", "22").Dict("event_data", ev).Dict("cell_info", ci).Msg("")
+			mps_speed := (float32(loc.Speed) * 1000) / 3600
+			gt06.store.Put(fsn, loc.Latitude, loc.Longitude, -1, mps_speed, loc.Timestamp, tread)
+			gt06.state.Sublist.MarshalSend(gt06.tid, loc.Latitude, loc.Longitude, mps_speed, loc.Timestamp, tread)
+			gt06.state.UpdateLocation(loc.Longitude, loc.Latitude, loc.Timestamp.UTC())
+
+		case byte(gt06GPS):
+			loc := parseGT06GPSMessage(gt06.msg.Payload)
+			ci := log.NewContext(nil).Int("MCC", loc.MCC).Int("MNC", loc.MNC).Int("cell_id", loc.CellID).Int("LAC", loc.LAC).Value()
+			ev := log.NewContext(nil).Float64("lat", loc.Latitude).Float64("lon", loc.Longitude).Time("timestamp", loc.Timestamp).Int("sat_count", loc.SatCount).Int("speed", loc.Speed).Value()
+			gt06.log.Debug().Str("event", "location update").Str("protocol", "12").Dict("event_data", ev).Dict("cell_info", ci).Msg("")
 			mps_speed := (float32(loc.Speed) * 1000) / 3600
 			gt06.store.Put(fsn, loc.Latitude, loc.Longitude, -1, mps_speed, loc.Timestamp, tread)
 			gt06.state.Sublist.MarshalSend(gt06.tid, loc.Latitude, loc.Longitude, mps_speed, loc.Timestamp, tread)
@@ -152,19 +162,20 @@ func (gt06 *GT06) Run() {
 		case byte(informationTxPacket):
 			switch gt06.msg.Payload[0] {
 			case 0x04:
-				gt06.log.Debug().Str("event", "information packet").Dict("event_data", zerolog.Dict().Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:]))).Msg("")
+				inf := log.NewContext(nil).Str("subevent", "terminal status").Str("status", string(gt06.msg.Payload[1:])).Value()
+				gt06.log.Debug().Str("event", "information packet").Dict("event_data", inf).Msg("")
 			default:
 				gt06.log.Debug().Str("event", "information packet").Hex("data", gt06.msg.Payload).Msg("ignoring unknown information packet")
 			}
 		default:
-			gt06.log.Error().Hex("data", gt06.msg.Payload).Str("error", "unknown event protocol")
+			gt06.log.Error().Hex("data", gt06.msg.Payload).Str("error", "unknown event protocol").Msg("unhandled event protocol")
 		}
 
 		if gt06.c.Closed() {
 			break
 		}
 	}
-	gt06.state.Attached.Unlock()
+	// gt06.state.Attached.Unlock()
 }
 
 func (gt06 *GT06) readMessage() {
@@ -173,7 +184,8 @@ func (gt06 *GT06) readMessage() {
 	var frame_length int //from the beginning of gt06.buffer (including trailer 0x0d 0x0a)
 	n, err := gt06.c.ReadFull(gt06.buffer[:4])
 	if err != nil {
-		gt06.log.Err(err).Msg("Error while reading")
+		gt06.log.Error().Err(err).Msg("Error while reading")
+
 		gt06.closeErr(err)
 		return
 	}
@@ -194,7 +206,7 @@ func (gt06 *GT06) readMessage() {
 
 	_, err = gt06.c.ReadFull(gt06.buffer[4:frame_length])
 	if err != nil {
-		gt06.log.Err(err).Msg("Error while reading")
+		gt06.log.Error().Err(err).Msg("Error while reading")
 		gt06.closeErr(err)
 		return
 	}

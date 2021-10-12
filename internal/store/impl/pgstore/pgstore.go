@@ -7,8 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
 )
 
 type Store struct {
@@ -19,7 +18,7 @@ type Store struct {
 	wbuf   buffer
 	dbc    *pgxpool.Conn
 	dbp    *pgxpool.Pool
-	logger zerolog.Logger
+	log    log.Logger
 	table  string
 }
 
@@ -55,7 +54,8 @@ func NewStore(db *pgxpool.Pool, table string, config *StoreConfig) *Store {
 	o.config = config
 	o.table = table
 	o.dbp = db
-	o.logger = log.With().Str("module", "store").Logger()
+	o.log = log.DefaultLogger
+	o.log.Context = log.NewContext(nil).Str("module", "pgstore").Value()
 	o.wbuf = new_buffer(0, o.config.BufSize)
 	o.wlock = &sync.Mutex{}
 	o.cond = sync.NewCond(&sync.Mutex{})
@@ -127,11 +127,11 @@ func (st *Store) flush() {
 
 func (st *Store) handle() {
 	var err error
-	st.logger.Info().Msg("starting flusher task")
+	st.log.Info().Msg("starting flusher task")
 	for {
 		st.cond.L.Lock()
 		st.cond.Wait()
-		st.logger.Debug().Msg("flusher task signalled")
+		st.log.Debug().Msg("flusher task signalled")
 		buf := st.rbuf
 		st.cond.L.Unlock()
 		t1 := time.Now()
@@ -143,9 +143,9 @@ func (st *Store) handle() {
 				return []interface{}{d.fsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil
 			}))
 		if err != nil {
-			st.logger.Err(err).Msg("flush error")
+			st.log.Error().Err(err).Msg("flush error")
 		} else {
-			st.logger.Debug().Str("action", "flush").Int("length", len(buf.buf)).Dur("time_taken", time.Since(t1)).Msg("flush successfull")
+			st.log.Debug().Str("action", "flush").Int("length", len(buf.buf)).Dur("time_taken", time.Since(t1)).Msg("flush successfull")
 		}
 	}
 

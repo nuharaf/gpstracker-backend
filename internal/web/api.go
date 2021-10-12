@@ -8,8 +8,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
 	gps "nuha.dev/gpstracker/internal/gps/serverimpl"
 	"nuha.dev/gpstracker/internal/web/login"
 	"nuha.dev/gpstracker/internal/web/service"
@@ -25,11 +24,10 @@ type Api struct {
 	r      chi.Router
 	s      *http.Server
 	config *ApiConfig
-	log    zerolog.Logger
+	log    log.Logger
 }
 
 func NewApi(db *pgxpool.Pool, gsrv *gps.Server, config *ApiConfig) *Api {
-	log.With().Str("module", "api").Logger()
 	api := &Api{config: config}
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
@@ -74,6 +72,7 @@ func NewApi(db *pgxpool.Pool, gsrv *gps.Server, config *ApiConfig) *Api {
 func (api *Api) Run() {
 	err := api.s.ListenAndServe()
 	if err != nil {
+		api.log.Error().Err(err).Msg("")
 		panic(err)
 	}
 }

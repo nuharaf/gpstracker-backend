@@ -11,16 +11,17 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
+	"github.com/phuslu/log"
+
 	gps "nuha.dev/gpstracker/internal/gps/serverimpl"
 )
 
 type ServiceRegistry struct {
 	svcs map[string]service
 	*validator.Validate
-	db     *pgxpool.Pool
-	logger zerolog.Logger
-	gsrv   *gps.Server
+	db   *pgxpool.Pool
+	log  log.Logger
+	gsrv *gps.Server
 }
 
 type userSessionKeyType struct{}
@@ -95,6 +96,7 @@ func (sreg *ServiceRegistry) Call(tag string, w http.ResponseWriter, r *http.Req
 			http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
 			return
 		} else {
+			sreg.log.Error().Err(err).Msg("")
 			panic(err)
 		}
 	} else {
@@ -126,7 +128,7 @@ func (sreg *ServiceRegistry) Call(tag string, w http.ResponseWriter, r *http.Req
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(response.Interface())
 	if err != nil {
-		sreg.logger.Err(err).Msg("")
+		sreg.log.Error().Err(err).Msg("")
 	}
 }
 

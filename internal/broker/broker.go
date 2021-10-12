@@ -6,12 +6,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
 )
 
 type Broker struct {
-	logger zerolog.Logger
+	log    log.Logger
 	config BrokerConfig
 	rbuf   buffer
 	wbuf   buffer
@@ -41,7 +40,8 @@ func new_buffer(seq uint64, len int) buffer {
 func NewBroker(config *BrokerConfig) *Broker {
 	br := &Broker{}
 	br.config = *config
-	br.logger = log.With().Str("module", "broker").Logger()
+	br.log = log.DefaultLogger
+	br.log.Context = log.NewContext(nil).Str("module", "broker").Value()
 	br.rlock = &sync.RWMutex{}
 	br.cond = sync.NewCond(br.rlock.RLocker())
 	br.wbuf = new_buffer(0, config.BufSize)
@@ -53,18 +53,18 @@ func (br *Broker) Run() {
 	go br.timer_flusher()
 	ln, err := net.Listen("tcp", br.config.Addr)
 	if err != nil {
-		br.logger.Err(err).Msg("unable to listen")
+		br.log.Error().Err(err).Msg("unable to listen")
 		return
 	}
 	for {
-		br.logger.Info().Msg("accepting new connection ...")
+		br.log.Info().Msg("accepting new connection ...")
 		conn, err := ln.Accept()
 		if err != nil {
-			br.logger.Err(err).Msg("failed to accept new connection")
+			br.log.Error().Err(err).Msg("failed to accept new connection")
 			ln.Close()
 			return
 		}
-		bconn := brokerConn{br: br, c: conn, logger: br.logger}
+		bconn := brokerConn{br: br, c: conn, log: br.log}
 		go func() {
 			bconn.handle()
 		}()
@@ -115,7 +115,7 @@ type brokerConn struct {
 	c  net.Conn
 	r  *bufio.Reader
 	// token  string
-	logger zerolog.Logger
+	log log.Logger
 }
 
 func (bc *brokerConn) handle() {
@@ -137,7 +137,7 @@ func (bc *brokerConn) handle() {
 		_ = bc.c.SetWriteDeadline(time.Now().Add(time.Second))
 		_, err = buf.buf.WriteTo(bc.c)
 		if err != nil {
-			bc.logger.Err(err).Msg("error writing buffer")
+			bc.log.Error().Err(err).Msg("error writing buffer")
 			return
 		}
 	}

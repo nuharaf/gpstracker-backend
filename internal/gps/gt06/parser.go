@@ -11,7 +11,7 @@ import (
 
 const (
 	loginMessage        byte = 0x01
-	locationData        byte = 0x12
+	gt06GPS             byte = 0x12
 	statusInformation   byte = 0x13
 	stringInformation   byte = 0x15
 	alarmData           byte = 0x16
@@ -51,6 +51,18 @@ type gk310GPSMessage struct {
 	ACC       bool
 }
 
+type gt06GPSMessage struct {
+	Timestamp time.Time
+	Latitude  float64
+	Longitude float64
+	SatCount  int
+	Speed     int
+	MCC       int
+	MNC       int
+	LAC       int
+	CellID    int
+}
+
 type statusInfo struct {
 	Arm       bool
 	ACC       bool
@@ -72,6 +84,32 @@ func parseStatusInformation(d []byte) *statusInfo {
 	m.Arm = d[0]&0b00000001 != 0
 	m.Voltage = int(d[1])
 	m.GSMSignal = int(d[2])
+	return m
+}
+
+func parseGT06GPSMessage(d []byte) *gt06GPSMessage {
+	m := &gt06GPSMessage{}
+	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.Local)
+	m.SatCount = int(d[6] & 0x0F)
+	lat := float64(binary.BigEndian.Uint32(d[7:11])) / 1800000
+	lon := float64(binary.BigEndian.Uint32(d[11:15])) / 1800000
+	m.Speed = int(d[15])
+	isNorth := d[16]&0b00000100 != 0
+	isWest := d[16]&0b00001000 != 0
+	if isNorth {
+		m.Latitude = lat
+	} else {
+		m.Latitude = 0 - lat
+	}
+	if isWest {
+		m.Longitude = 0 - lon
+	} else {
+		m.Longitude = lon
+	}
+	m.MCC = int(binary.BigEndian.Uint16(d[18:20]))
+	m.MNC = int(d[20])
+	m.LAC = int(binary.BigEndian.Uint16(d[21:23]))
+	m.CellID = int(binary.BigEndian.Uint32(append([]byte{0}, d[23:26]...)))
 	return m
 }
 

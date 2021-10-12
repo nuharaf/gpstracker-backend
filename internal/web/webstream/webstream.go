@@ -12,8 +12,8 @@ import (
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
+
 	"nhooyr.io/websocket"
 	"nuha.dev/gpstracker/internal/gps/client"
 	gps "nuha.dev/gpstracker/internal/gps/serverimpl"
@@ -21,7 +21,7 @@ import (
 
 type WebstreamServer struct {
 	server *http.Server
-	logger zerolog.Logger
+	log    log.Logger
 	gsrv   *gps.Server
 	config WebStreamConfig
 	db     *pgxpool.Pool
@@ -63,7 +63,8 @@ func NewWebstream(db *pgxpool.Pool, gps_server *gps.Server, config WebStreamConf
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
-	o.logger = log.With().Str("module", "websocket").Logger()
+	o.log = log.DefaultLogger
+	o.log.Context = log.NewContext(nil).Str("module", "websocket").Value()
 	o.gsrv = gps_server
 	o.db = db
 	return o
@@ -72,6 +73,7 @@ func NewWebstream(db *pgxpool.Pool, gps_server *gps.Server, config WebStreamConf
 func (ws *WebstreamServer) Run() {
 	err := ws.server.ListenAndServe()
 	if err != nil {
+		ws.log.Error().Err(err).Msg("")
 		panic(err)
 	}
 }
@@ -83,7 +85,7 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 	defer c.Close(websocket.StatusInternalError, "unhandled error")
 
 	if err != nil {
-		ws.logger.Err(err).Msg("Error while upgrading websocket")
+		ws.log.Error().Err(err).Msg("Error while upgrading websocket")
 		return
 	}
 	//read login info
@@ -91,10 +93,10 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	_, msg, err := c.Read(readCtx)
 	if err != nil {
-		ws.logger.Err(err).Msg("Error while reading auth token")
+		ws.log.Error().Err(err).Msg("Error while reading auth token")
 		return
 	}
-	ws.logger.Info().Msg("websocket token received")
+	ws.log.Info().Msg("websocket token received")
 
 	var user_id, session_id string
 	var valid bool
@@ -104,7 +106,7 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 			c.Close(websocket.StatusPolicyViolation, "invalid token")
 		}
 	}
-	wc := &WebstreamClient{uid: user_id, sid: session_id, srv: ws, c: c, tok: msg, logger: ws.logger, lock: sync.Mutex{}, buf: make([][]byte, 0, 10), wg: sync.WaitGroup{}}
+	wc := &WebstreamClient{uid: user_id, sid: session_id, srv: ws, c: c, tok: msg, log: ws.log, lock: sync.Mutex{}, buf: make([][]byte, 0, 10), wg: sync.WaitGroup{}}
 	go wc.writeLoop()
 	go wc.readloop()
 	wc.wg.Wait()
@@ -124,6 +126,7 @@ func (ws *WebstreamServer) validate_token(ctx context.Context, token string) (bo
 		if err == pgx.ErrNoRows {
 			return false, "", ""
 		} else {
+			ws.log.Error().Err(err).Msg("")
 			panic(err)
 		}
 	} else {
@@ -139,7 +142,7 @@ type WebstreamClient struct {
 	uid     string
 	sid     string
 	tok     []byte
-	logger  zerolog.Logger
+	log     log.Logger
 	closed  bool
 	err     error
 	buf     [][]byte
@@ -158,7 +161,7 @@ func (wc *WebstreamClient) readloop() {
 		_, msg, err := wc.c.Read(context.Background())
 		fmt.Print(string(msg))
 		if err != nil {
-			wc.logger.Err(err)
+			wc.log.Error().Err(err)
 			wc.lock.Lock()
 			wc.closeErr(err)
 			wc.lock.Unlock()
@@ -166,7 +169,7 @@ func (wc *WebstreamClient) readloop() {
 		} else {
 			if string(msg[:6]) == "ADDSUB" {
 				subname := strings.Split(string(msg[7:]), ",")
-				wc.logger.Debug().Strs("addsub", subname).Msg("receive add subscription message")
+				wc.log.Debug().Strs("addsub", subname).Msg("receive add subscription message")
 				for _, v := range subname {
 					id, err := strconv.ParseUint(v, 10, 64)
 					if err != nil {
@@ -178,7 +181,7 @@ func (wc *WebstreamClient) readloop() {
 				}
 			} else if string(msg[:6]) == "DELSUB" {
 				subname := strings.Split(string(msg[7:]), ",")
-				wc.logger.Debug().Strs("delsub", subname).Msg("receive delete subscription message")
+				wc.log.Debug().Strs("delsub", subname).Msg("receive delete subscription message")
 				for _, v := range subname {
 					id, err := strconv.ParseUint(v, 10, 64)
 					if err != nil {
@@ -203,7 +206,7 @@ func (wc *WebstreamClient) writeLoop() {
 		for _, d := range wc.buf {
 			err := wc.c.Write(context.Background(), websocket.MessageBinary, d)
 			if err != nil {
-				wc.logger.Err(err).Msg("Error while writing to connection")
+				wc.log.Error().Err(err).Msg("Error while writing to connection")
 				wc.closeErr(err)
 				wc.lock.Unlock()
 				return

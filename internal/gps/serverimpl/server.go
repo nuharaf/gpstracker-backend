@@ -11,8 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
+	"github.com/phuslu/log"
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/droid"
 	"nuha.dev/gpstracker/internal/gps/gt06"
@@ -76,7 +75,7 @@ type ClientStatusDetail struct {
 }
 
 type Server struct {
-	logger      zerolog.Logger
+	log         log.Logger
 	db          *pgxpool.Pool
 	config      *ServerConfig
 	cid_counter uint64
@@ -100,7 +99,8 @@ func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Serve
 	s.conn_list = conn_list{mu: sync.Mutex{}, list: make(map[uint64]client.ClientInterface)}
 	s.clientstate_list = clientstate_list{mu: sync.Mutex{}, list: make(map[uint64]*client.ClientState)}
 	// s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
-	s.logger = log.With().Str("module", "server").Logger()
+	s.log = log.DefaultLogger
+	s.log.Context = log.NewContext(nil).Str("module", "server").Value()
 	s.config = config
 	s.db = db
 	s.store = store
@@ -108,17 +108,17 @@ func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Serve
 }
 
 func (s *Server) runDirectListener() {
-	s.logger.Info().Str("addr", s.config.DirectListenerAddr).Msg("starting direct port listener")
+	s.log.Info().Str("addr", s.config.DirectListenerAddr).Msg("starting direct port listener")
 	ln, err := net.Listen("tcp", s.config.DirectListenerAddr)
 	if err != nil {
-		s.logger.Err(err).Msg("unable to listen")
+		s.log.Error().Err(err).Msg("unable to listen")
 		return
 	}
 	for {
-		s.logger.Info().Msg("accepting new direct connection ...")
+		s.log.Info().Msg("accepting new direct connection ...")
 		conn, err := ln.Accept()
 		if err != nil {
-			s.logger.Err(err).Msg("failed to accept new direct connection")
+			s.log.Error().Err(err).Msg("failed to accept new direct connection")
 			ln.Close()
 			return
 		}
@@ -157,7 +157,7 @@ func (s *Server) GetGpsClientState(tid uint64) *client.ClientState {
 		selectSql := `SELECT sn_type,serial,fsn FROM public."tracker" where id = $1`
 		err := s.db.QueryRow(context.Background(), selectSql, tid).Scan(&fsn)
 		if err != nil {
-			s.logger.Err(err).Msg("error while querying tracker by id")
+			s.log.Error().Err(err).Msg("error while querying tracker by id")
 			return nil
 		}
 
@@ -221,21 +221,21 @@ func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) 
 
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			s.logger.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msg("tracker not found, registering automatically")
+			s.log.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msg("tracker not found, registering automatically")
 			//auto register tracker
 			fsn = sn_type + ":" + strconv.FormatUint(serial, 16)
 			insertSql := `INSERT INTO public.tracker (sn_type,serial_number,fsn,allow_connect,registered_at) VALUES ($1,$2,$3,true,now()) RETURNING id`
 			err := s.db.QueryRow(context.Background(), insertSql, sn_type, serial, fsn).Scan(&tid)
 			if err != nil {
-				s.logger.Error().Err(err).Msg("error while auto registering tracker")
+				s.log.Error().Err(err).Msg("error while auto registering tracker")
 				return false
 			}
 		} else {
-			s.logger.Error().Err(err).Msg("error while querying tracker by serial")
+			s.log.Error().Err(err).Msg("error while querying tracker by serial")
 			return false
 		}
 	} else {
-		s.logger.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msgf("tracker found with tid : %d", tid)
+		s.log.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msgf("tracker found with tid : %d", tid)
 	}
 
 	s.clientstate_list.mu.Lock()
@@ -252,17 +252,17 @@ func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) 
 
 func (s *Server) handleConn(conn net.Conn, raddr string) {
 	cid := atomic.AddUint64(&s.cid_counter, 1)
-	wconn := wc.NewWrappedConn(conn, raddr, cid, log.Logger)
-	s.logger.Info().Uint64("cid", cid).Msg("creating new client ... ")
+	wconn := wc.NewWrappedConn(conn, raddr, cid)
+	s.log.Info().Uint64("cid", cid).Msg("creating new client ... ")
 	client, err := s.newClient(wconn)
 	if err == nil {
 		s.saveClient(cid, client)
-		s.logger.Info().Uint64("cid", cid).Msg("running client")
+		s.log.Info().Uint64("cid", cid).Msg("running client")
 		client.Run()
-		s.logger.Info().Uint64("cid", cid).Msg("client stopped")
+		s.log.Info().Uint64("cid", cid).Msg("client stopped")
 		s.delClient(cid)
 	} else {
-		s.logger.Error().Uint64("cid", cid).Msg("failed to create client")
+		s.log.Error().Uint64("cid", cid).Msg("failed to create client")
 	}
 }
 
@@ -270,21 +270,21 @@ func (s *Server) newClient(conn *wc.Conn) (client.ClientInterface, error) {
 	// conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	st, err := conn.Peek(1)
 	if err != nil {
-		s.logger.Err(err).Msg("error while peeking from connection")
+		s.log.Error().Err(err).Msg("error while peeking from connection")
 		return nil, err
 	}
 	ip, port, _ := net.SplitHostPort(conn.RemoteAddr())
 	if st[0] == '{' {
 		droid := droid.NewDroid(conn, s, s.store)
-		s.logger.Info().Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("new droid client")
+		s.log.Info().Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("new droid client")
 		return droid, nil
 	} else if st[0] == 0x78 {
 		gt06 := gt06.NewGT06(conn, s, s.store)
-		s.logger.Info().Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("new gt06 client")
+		s.log.Info().Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("new gt06 client")
 		return gt06, nil
 	} else {
 		b, _ := conn.ReadAll()
-		s.logger.Error().Hex("data", b).Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("unknown data")
+		s.log.Error().Hex("data", b).Str("remote_host", ip).Str("remote_port", port).Uint64("cid", conn.Cid()).Msg("unknown data")
 		conn.Close()
 		return nil, errUnknownClient
 	}

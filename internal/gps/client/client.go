@@ -35,7 +35,6 @@ func (sl *SimpleLocation) UpdateLocation(lon, lat float64, gpstime time.Time) {
 
 // I think this is thread safe
 type ClientState struct {
-	Attached      sync.Mutex
 	Stat          *stat.Stat
 	Sublist       *sublist.Sublist
 	TrackerId     uint64
@@ -62,7 +61,7 @@ func (cs *ClientState) SetKV(key string, value string) {
 func (cs *ClientState) AddKV(kv map[string]interface{}) {
 	cs.kv_mu.Lock()
 	for key, value := range kv {
-		cs.kv_status[key] = value.(string)
+		cs.kv_status[key] = value
 	}
 	cs.kv_mu.Unlock()
 }
@@ -87,7 +86,7 @@ func (cs *ClientState) GetLastLocation() (lon float64, lat float64, gpstime time
 }
 
 func NewClientState(tid uint64, fsn string) *ClientState {
-	d := &ClientState{Attached: sync.Mutex{}, Stat: stat.NewStat(), Sublist: sublist.NewSublist()}
+	d := &ClientState{Stat: stat.NewStat(), Sublist: sublist.NewSublist()}
 	d.FSN = fsn
 	d.TrackerId = tid
 	d.kv_status = make(map[string]interface{})

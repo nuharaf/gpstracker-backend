@@ -9,9 +9,6 @@ import (
 	"time"
 
 	"github.com/phuslu/log"
-	// "github.com/rs/zerolog"
-	// "github.com/rs/zerolog"
-	// "github.com/rs/zerolog/log"
 	"nuha.dev/gpstracker/internal/gps/client"
 	"nuha.dev/gpstracker/internal/gps/server"
 	"nuha.dev/gpstracker/internal/gps/subscriber"
@@ -69,11 +66,8 @@ var errRejectedLogin = errors.New("login rejected")
 
 func NewDroid(c *wc.Conn, server server.ServerInterface, store store.Store) *Droid {
 	o := &Droid{c: c, s: server}
-	// logger := log.With().Str("module", "droid").Uint64("cid", c.Cid()).Logger()
-	logger := log.DefaultLogger
-	logger.Context = log.NewContext(nil).Str("module", "droid").Uint64("cid", c.Cid()).Value()
-
-	o.log = logger
+	o.log = log.DefaultLogger
+	o.log.Context = log.NewContext(nil).Str("module", "droid").Uint64("cid", c.Cid()).Value()
 	o.store = store
 	o.login = LoginData{}
 	o.loc = LocationData{}
@@ -159,17 +153,16 @@ func (dr *Droid) Run() {
 		atomic.StoreInt32(&dr.logged_in, 1)
 		dr.state.Stat.ConnectEv(dr.c.Created())
 		dr.tid = dr.state.TrackerId
-		// dr.log = dr.log.With().Uint64("tid", dr.tid).Logger()
 		dr.log.Context = log.NewContext(dr.log.Context).Uint64("tid", dr.tid).Value()
 		dr.log.Info().Msg("login successful")
 
 	} else {
 		dr.closeErr(errRejectedLogin)
-		dr.log.Err(errRejectedLogin).Msg("login rejected")
+		dr.log.Error().Err(errRejectedLogin).Msg("login rejected")
 		return
 	}
 
-	dr.state.Attached.Lock()
+	// dr.state.Attached.Lock()
 	fsn := dr.state.FSN
 	for {
 
@@ -216,5 +209,5 @@ func (dr *Droid) Run() {
 		}
 
 	}
-	dr.state.Attached.Unlock()
+	// dr.state.Attached.Unlock()
 }

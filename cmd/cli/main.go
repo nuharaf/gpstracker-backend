@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v4/pgxpool"
-	"github.com/rs/zerolog"
+	"github.com/phuslu/log"
 	gps "nuha.dev/gpstracker/internal/gps/serverimpl"
 	"nuha.dev/gpstracker/internal/store/impl/pgstore"
 	"nuha.dev/gpstracker/internal/web"
@@ -16,7 +16,7 @@ import (
 )
 
 func main() {
-	debug := flag.Bool("debug", true, "sets log level to debug")
+
 	db_url := flag.String("db_url", "postgresql://postgres:postgres@localhost/gpsv2", "postgres database url")
 	gps_server := flag.Bool("gps_server", true, "run gps server")
 	// gps_server_mock_login := flag.Bool("gps_mock_login", true, "mock gps login")
@@ -31,10 +31,8 @@ func main() {
 	mon_server := flag.Bool("mon_server", true, "run monitoring server")
 	mon_server_listen_addr := flag.String("mon_address", "localhost:3334", "monitoring server address to listen to")
 	flag.Parse()
-	zerolog.SetGlobalLevel(zerolog.Disabled)
-	if *debug {
-		zerolog.SetGlobalLevel(zerolog.DebugLevel)
-	}
+	log.DefaultLogger.Level = log.TraceLevel
+
 	pool, err := pgxpool.Connect(context.Background(), *db_url)
 	if err != nil {
 		panic(err.Error())
