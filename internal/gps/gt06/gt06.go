@@ -146,6 +146,7 @@ func (gt06 *GT06) run() {
 		gt06.closeAndSetErr(err)
 		return
 	}
+	gt06.log.Trace().Hex("payload", gt06.msg.Payload).Int("serial", gt06.msg.Serial).Msg("receive login message from terminal")
 	loginTime := time.Now().UTC()
 	if gt06.msg.Protocol == loginMessage {
 		lm := parseLoginMessage(gt06.msg.Payload)
