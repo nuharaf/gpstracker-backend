@@ -42,6 +42,7 @@ type GT06 struct {
 	lastGK310Location       *gk310GPSMessage
 	lastGT06Location        *gt06GPSMessage
 	lastInformationTxPacket string
+	lastDeviceSn            *deviceSn
 }
 
 type conn_stat struct {
@@ -234,6 +235,9 @@ func (gt06 *GT06) run() {
 			case 0x04:
 				gt06.lastInformationTxPacket = string(gt06.msg.Payload[1:])
 				gt06.log.Debug().Str("procode", procode).Str("subprocode", subprocode).Msg("information packet : terminal status synchronization")
+			case 0x0a:
+				gt06.lastDeviceSn = parseDeviceSn(gt06.msg.Payload[1:])
+				gt06.log.Debug().Str("procode", procode).Str("subprocode", subprocode).Msg("information packet : terminal device sn info")
 			default:
 				gt06.log.Debug().Str("procode", procode).Str("subprocode", subprocode).Msg("information packet : unknown sub protocol code")
 			}

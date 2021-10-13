@@ -109,7 +109,7 @@ func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Serve
 }
 
 func (s *Server) initTable() {
-	ddl := `CREATE TABLE public.tracker (
+	ddl := `CREATE TABLE IF NOT EXISTS public.tracker (
 	id bigserial NOT NULL,
 	sn_type text NOT NULL,
 	serial_number int8 NOT NULL,

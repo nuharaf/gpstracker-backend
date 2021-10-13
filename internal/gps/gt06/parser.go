@@ -30,6 +30,20 @@ type message struct {
 	Payload  []byte
 }
 
+type deviceSn struct {
+	imei  string
+	imsi  string
+	iccid string
+}
+
+func parseDeviceSn(d []byte) *deviceSn {
+	m := &deviceSn{}
+	m.imei = hex.EncodeToString(d[:8])
+	m.imsi = hex.EncodeToString(d[8:16])
+	m.iccid = hex.EncodeToString(d[16:24])
+	return m
+}
+
 type gk310GPSMessage struct {
 	Latitude          float64
 	Longitude         float64
