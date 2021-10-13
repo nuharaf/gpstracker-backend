@@ -44,9 +44,9 @@ type conn_list struct {
 	list map[uint64]client.ClientInterface
 }
 
-type clientstate_list struct {
+type clientsession_list struct {
 	mu   sync.Mutex
-	list map[uint64]*client.ClientState
+	list map[uint64]*client.ClientSession
 }
 
 type ClientStatus struct {
@@ -80,7 +80,7 @@ type Server struct {
 	config      *ServerConfig
 	cid_counter uint64
 	conn_list
-	clientstate_list
+	clientsession_list
 	store store.Store
 }
 
@@ -97,7 +97,7 @@ func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Serve
 
 	s := &Server{}
 	s.conn_list = conn_list{mu: sync.Mutex{}, list: make(map[uint64]client.ClientInterface)}
-	s.clientstate_list = clientstate_list{mu: sync.Mutex{}, list: make(map[uint64]*client.ClientState)}
+	s.clientsession_list = clientsession_list{mu: sync.Mutex{}, list: make(map[uint64]*client.ClientSession)}
 	// s.msubs = msubs{mu: sync.RWMutex{}, list: make(map[string]*subs)}
 	s.log = log.DefaultLogger
 	s.log.Context = log.NewContext(nil).Str("module", "server").Value()
@@ -122,10 +122,7 @@ func (s *Server) runDirectListener() {
 			ln.Close()
 			return
 		}
-
-		go func() {
-			s.handleConn(conn, conn.RemoteAddr().String())
-		}()
+		s.handleConn(conn, conn.RemoteAddr().String())
 	}
 }
 
@@ -146,11 +143,11 @@ func (s *Server) Run() {
 
 }
 
-func (s *Server) GetGpsClientState(tid uint64) *client.ClientState {
-	var state *client.ClientState
-	s.clientstate_list.mu.Lock()
-	defer s.clientstate_list.mu.Unlock()
-	state, ok := s.clientstate_list.list[tid]
+func (s *Server) GetGpsClientState(tid uint64) *client.ClientSession {
+	var state *client.ClientSession
+	s.clientsession_list.mu.Lock()
+	defer s.clientsession_list.mu.Unlock()
+	state, ok := s.clientsession_list.list[tid]
 	if !ok {
 		var fsn string
 		//verify tracker id is in database
@@ -161,8 +158,8 @@ func (s *Server) GetGpsClientState(tid uint64) *client.ClientState {
 			return nil
 		}
 
-		state = client.NewClientState(tid, fsn)
-		s.clientstate_list.list[tid] = state
+		state = client.NewClientSession(tid, fsn)
+		s.clientsession_list.list[tid] = state
 	}
 	return state
 }
@@ -170,15 +167,12 @@ func (s *Server) GetGpsClientState(tid uint64) *client.ClientState {
 func (s *Server) GetClientsStatus() []ClientStatus {
 
 	statistic := make([]ClientStatus, 0, 10)
-	s.clientstate_list.mu.Lock()
-	defer s.clientstate_list.mu.Unlock()
+	s.clientsession_list.mu.Lock()
+	defer s.clientsession_list.mu.Unlock()
 
-	for tid, state := range s.clientstate_list.list {
+	for tid, state := range s.clientsession_list.list {
 		c := ClientStatus{}
 		c.TrackerId = tid
-		c.LastConnect = state.Stat.ConnectLast()
-		c.LastDisc = state.Stat.DisconnectLast()
-		c.LastUpdate = state.Stat.UpdateLast()
 		c.FSN = state.FSN
 		lon, lat, gpstime := state.GetLastLocation()
 		c.LastLatitude = lat
@@ -191,28 +185,25 @@ func (s *Server) GetClientsStatus() []ClientStatus {
 }
 
 func (s *Server) GetClientStatus(tid uint64) *ClientStatusDetail {
-	s.clientstate_list.mu.Lock()
-	defer s.clientstate_list.mu.Unlock()
-	state, ok := s.clientstate_list.list[tid]
+	s.clientsession_list.mu.Lock()
+	defer s.clientsession_list.mu.Unlock()
+	state, ok := s.clientsession_list.list[tid]
 	if !ok {
 		return nil
 	} else {
 		c := &ClientStatusDetail{}
 		c.TrackerId = tid
-		c.ConnectHistory = state.Stat.ConnectList()
-		c.DiscHistory = state.Stat.DisconnectList()
-		c.UpdateHistory = state.Stat.UpdateList()
 		c.FSN = state.FSN
 		lon, lat, gpstime := state.GetLastLocation()
 		c.LastLocation.Latitude = lat
 		c.LastLocation.Longitude = lon
 		c.LastLocation.GpsTime = gpstime
-		c.AdditionalStatus = state.GetKV()
+		// c.AdditionalStatus = state.GetKV()
 		return c
 	}
 }
 
-func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) bool {
+func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) (bool, *client.ClientSession, *client.ClientConfig) {
 
 	var tid uint64
 	var fsn string
@@ -228,26 +219,40 @@ func (s *Server) Login(sn_type string, serial uint64, c client.ClientInterface) 
 			err := s.db.QueryRow(context.Background(), insertSql, sn_type, serial, fsn).Scan(&tid)
 			if err != nil {
 				s.log.Error().Err(err).Msg("error while auto registering tracker")
-				return false
+				return false, nil, nil
 			}
 		} else {
 			s.log.Error().Err(err).Msg("error while querying tracker by serial")
-			return false
+			return false, nil, nil
 		}
 	} else {
 		s.log.Info().Str("sn_type", sn_type).Uint64("sn", serial).Msgf("tracker found with tid : %d", tid)
 	}
 
-	s.clientstate_list.mu.Lock()
+	s.clientsession_list.mu.Lock()
 
-	state, ok := s.clientstate_list.list[tid]
+	session, ok := s.clientsession_list.list[tid]
 	if !ok {
-		state = client.NewClientState(tid, fsn)
-		s.clientstate_list.list[tid] = state
+		session = client.NewClientSession(tid, fsn)
+		s.clientsession_list.list[tid] = session
+		s.clientsession_list.mu.Unlock()
+	} else {
+		s.log.Info().Msgf("Existing session for tid = %d found", tid)
+		session.Lock()
+		if session.Client != nil {
+			s.log.Info().Msgf("Disconnecting previous connection with cid = %d", session.Client.ConnectionId())
+			ok := session.Client.TryCloseWait()
+			if !ok {
+				s.log.Warn().Msgf("Disconnecting attempt for cid = %d failed", session.Client.ConnectionId())
+				return false, nil, nil
+			}
+		}
+		session.Client = c
+		session.Unlock()
+
 	}
-	s.clientstate_list.mu.Unlock()
-	c.SetState(state)
-	return true
+
+	return true, session, &client.ClientConfig{}
 }
 
 func (s *Server) handleConn(conn net.Conn, raddr string) {
@@ -259,8 +264,6 @@ func (s *Server) handleConn(conn net.Conn, raddr string) {
 		s.saveClient(cid, client)
 		s.log.Info().Uint64("cid", cid).Msg("running client")
 		client.Run()
-		s.log.Info().Uint64("cid", cid).Msg("client stopped")
-		s.delClient(cid)
 	} else {
 		s.log.Error().Uint64("cid", cid).Msg("failed to create client")
 	}

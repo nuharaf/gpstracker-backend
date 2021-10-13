@@ -5,7 +5,7 @@ import (
 )
 
 type ServerInterface interface {
-	Login(sn_type string, serial uint64, c client.ClientInterface) (ok bool)
+	Login(sn_type string, serial uint64, c client.ClientInterface) (ok bool, session *client.ClientSession, config *client.ClientConfig)
 	// Subscribe(rids []string, sub subscriber.Subscriber)
 	// GetGpsClientState(tracker_id uint64) *client.ClientState
 }

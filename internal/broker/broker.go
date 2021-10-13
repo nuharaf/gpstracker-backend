@@ -104,8 +104,9 @@ func (br *Broker) flush() {
 	br.wbuf.t2 = time.Now()
 	br.rlock.Lock()
 	br.rbuf = br.wbuf
-	br.rlock.Unlock()
 	br.cond.Broadcast()
+	br.rlock.Unlock()
+
 	//allocate new buffer
 	br.wbuf = new_buffer(next, br.config.BufSize)
 }
@@ -128,10 +129,11 @@ func (bc *brokerConn) handle() {
 	// //verify token
 	// fmt.Println(token)
 	// bc.token = string(token)
-
+	bc.log.Info().Msg("starting flusher task")
 	for {
 		bc.br.cond.L.Lock()
 		bc.br.cond.Wait()
+		bc.log.Debug().Msg("flusher task signalled")
 		buf := bc.br.rbuf
 		bc.br.cond.L.Unlock()
 		_ = bc.c.SetWriteDeadline(time.Now().Add(time.Second))

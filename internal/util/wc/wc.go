@@ -12,9 +12,9 @@ import (
 )
 
 type Conn struct {
-	reader   *bufio.Reader
-	conn     net.Conn
-	closed   uint32
+	reader *bufio.Reader
+	conn   net.Conn
+	// closed   uint32
 	raddr    string
 	cid      uint64
 	created  time.Time
@@ -41,7 +41,7 @@ func (c *Conn) ReadBytes(delim byte) ([]byte, error) {
 
 func (c *Conn) Close() {
 	c.conn.Close()
-	atomic.StoreUint32(&c.closed, 1)
+	// atomic.StoreUint32(&c.closed, 1)
 	c.log.Debug().Uint64("byte_in", c.byte_in).Uint64("byte_out", c.byte_out).Uint64("cid", c.cid).Msg("Connection closed")
 }
 
@@ -53,9 +53,9 @@ func (c *Conn) Cid() uint64 {
 	return c.cid
 }
 
-func (c *Conn) Closed() bool {
-	return atomic.LoadUint32(&c.closed) == 1
-}
+// func (c *Conn) Closed() bool {
+// 	return atomic.LoadUint32(&c.closed) == 1
+// }
 
 func (c *Conn) ReadFull(buf []byte) (int, error) {
 	n, err := io.ReadFull(c.reader, buf)

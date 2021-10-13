@@ -22,13 +22,6 @@ const (
 	informationTxPacket byte = 0x94
 )
 
-const (
-	statusNormal     byte = 0b000
-	statusVibAlarm   byte = 0b001
-	statusEnterFence byte = 101
-	statusExitFence  byte = 110
-)
-
 var errBadFrame = errors.New("Bad frame")
 
 type message struct {
@@ -38,58 +31,95 @@ type message struct {
 }
 
 type gk310GPSMessage struct {
-	Latitude  float64
-	Longitude float64
-	Timestamp time.Time
-	SatCount  int
-	Speed     int
-	MCC       int
-	MNC       int
-	LAC       int
-	CellID    int
-	HasACC    bool
-	ACC       bool
+	Latitude          float64
+	Longitude         float64
+	Timestamp         time.Time
+	SatCount          int
+	Speed             int
+	MCC               int
+	MNC               int
+	LAC               int
+	CellID            int
+	HasACC            bool
+	ACC               bool
+	HasDataUploadMode bool
+	DataUploadMode    int
+	HasGPSReupload    bool
+	GPSIsReupload     bool
+	GPSDifferential   bool
+	GPSPositioned     bool
 }
 
 type gt06GPSMessage struct {
-	Timestamp time.Time
-	Latitude  float64
-	Longitude float64
-	SatCount  int
-	Speed     int
-	MCC       int
-	MNC       int
-	LAC       int
-	CellID    int
+	Timestamp       time.Time
+	Latitude        float64
+	Longitude       float64
+	SatCount        int
+	Speed           int
+	MCC             int
+	MNC             int
+	LAC             int
+	CellID          int
+	GPSDifferential bool
+	GPSPositioned   bool
 }
 
 type statusInfo struct {
-	Arm       bool
-	ACC       bool
-	AlarmCode int
-	GPS       bool
-	Voltage   int
-	GSMSignal int
+	Arm          bool
+	ACC          bool
+	EngineDisc   bool
+	Charging     bool
+	AlarmCode    int
+	AltAlarmCode int
+	Language     int
+	GPS          bool
+	Voltage      int
+	GSMSignal    int
 }
 
-func parseLoginMessage(d []byte) (sn string) {
-	return hex.EncodeToString(d[:8])
+type loginMsg struct {
+	SN            string
+	TimeOffset    time.Duration
+	HasTimeOffset bool
+	TypeID        [2]byte
+}
+
+func parseLoginMessage(d []byte) *loginMsg {
+	m := &loginMsg{}
+	m.SN = hex.EncodeToString(d[:8])
+	copy(m.TypeID[:], d[8:10])
+	if len(d) > 10 {
+		m.HasTimeOffset = true
+		bcdOffset := (uint16(d[10]) << 4) + (uint16(d[11]) >> 4)
+		hOffset := bcdOffset / 100
+		mOffset := bcdOffset % 100
+		m.TimeOffset = time.Duration(hOffset)*time.Hour + time.Duration(mOffset)*time.Minute
+		if d[11]&0b00001000 != 0 {
+			m.TimeOffset = -m.TimeOffset
+		}
+	}
+	return m
 }
 
 func parseStatusInformation(d []byte) *statusInfo {
 	m := &statusInfo{}
+	m.EngineDisc = d[0]&0b10000000 != 0
 	m.GPS = d[0]&0b01000000 != 0
 	m.AlarmCode = int(d[0]&0b00111000) >> 3
+	m.Charging = d[0]&0b00000100 != 0
 	m.ACC = d[0]&0b00000010 != 0
 	m.Arm = d[0]&0b00000001 != 0
 	m.Voltage = int(d[1])
 	m.GSMSignal = int(d[2])
+	m.AltAlarmCode = int(d[3])
+	m.Language = int(d[4])
 	return m
 }
 
-func parseGT06GPSMessage(d []byte) *gt06GPSMessage {
+func parseGT06GPSMessage(d []byte, time_offset *time.Duration) *gt06GPSMessage {
 	m := &gt06GPSMessage{}
-	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.Local)
+	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.UTC)
+	m.Timestamp = m.Timestamp.Add(-*time_offset)
 	m.SatCount = int(d[6] & 0x0F)
 	lat := float64(binary.BigEndian.Uint32(d[7:11])) / 1800000
 	lon := float64(binary.BigEndian.Uint32(d[11:15])) / 1800000
@@ -106,6 +136,8 @@ func parseGT06GPSMessage(d []byte) *gt06GPSMessage {
 	} else {
 		m.Longitude = lon
 	}
+	m.GPSDifferential = d[16]&0b00100000 != 0
+	m.GPSPositioned = d[16]&0b00010000 != 0
 	m.MCC = int(binary.BigEndian.Uint16(d[18:20]))
 	m.MNC = int(d[20])
 	m.LAC = int(binary.BigEndian.Uint16(d[21:23]))
@@ -135,11 +167,23 @@ func parseGK310GPSMessage(d []byte) *gk310GPSMessage {
 	m.MCC = int(binary.BigEndian.Uint16(d[18:20]))
 	m.MNC = int(d[20])
 	m.LAC = int(binary.BigEndian.Uint16(d[21:23]))
+	m.GPSDifferential = d[16]&0b00100000 != 0
+	m.GPSPositioned = d[16]&0b00010000 != 0
 
 	m.CellID = int(binary.BigEndian.Uint32(append([]byte{0}, d[23:26]...)))
-	m.HasACC = true
-	m.ACC = d[26] != 0
+	if len(d) > 26 {
+		m.HasACC = true
+		m.ACC = d[26] != 0
+	}
+	if len(d) > 27 {
+		m.HasDataUploadMode = true
+		m.DataUploadMode = int(d[27])
 
+	}
+	if len(d) > 28 {
+		m.HasGPSReupload = true
+		m.GPSIsReupload = d[28] != 0
+	}
 	return m
 }
 

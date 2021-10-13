@@ -146,7 +146,7 @@ type WebstreamClient struct {
 	closed  bool
 	err     error
 	buf     [][]byte
-	sublist map[uint64]*client.ClientState
+	sublist map[uint64]*client.ClientSession
 }
 
 func (wc *WebstreamClient) closeErr(err error) {

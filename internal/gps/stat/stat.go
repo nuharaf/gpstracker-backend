@@ -12,9 +12,8 @@ type time_event struct {
 }
 
 type Stat struct {
-	connect    time_event
-	disconnect time_event
-	update     time_event
+	connect time_event
+	update  time_event
 }
 
 func (s *Stat) getAsList(t *time_event) []time.Time {
@@ -44,20 +43,12 @@ func (s *Stat) ConnectLast() time.Time {
 	return s.getLastEvent(&s.connect)
 }
 
-func (s *Stat) DisconnectLast() time.Time {
-	return s.getLastEvent(&s.disconnect)
-}
-
 func (s *Stat) UpdateLast() time.Time {
 	return s.getLastEvent(&s.update)
 }
 
 func (s *Stat) ConnectList() []time.Time {
 	return s.getAsList(&s.connect)
-}
-
-func (s *Stat) DisconnectList() []time.Time {
-	return s.getAsList(&s.disconnect)
 }
 
 func (s *Stat) UpdateList() []time.Time {
@@ -70,9 +61,6 @@ func (s *Stat) UpdateEv(t time.Time) {
 
 func (s *Stat) ConnectEv(t time.Time) {
 	log(&s.connect, t)
-}
-func (s *Stat) DisconnectEv(t time.Time) {
-	log(&s.disconnect, t)
 }
 
 func log(l *time_event, t time.Time) {
@@ -90,7 +78,6 @@ func log(l *time_event, t time.Time) {
 func NewStat() *Stat {
 	o := &Stat{}
 	o.connect = new_time_event()
-	o.disconnect = new_time_event()
 	o.update = new_time_event()
 	return o
 }
