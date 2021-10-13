@@ -104,7 +104,26 @@ func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Serve
 	s.config = config
 	s.db = db
 	s.store = store
+	s.initTable()
 	return s
+}
+
+func (s *Server) initTable() {
+	ddl := `CREATE TABLE public.tracker (
+	id bigserial NOT NULL,
+	sn_type text NOT NULL,
+	serial_number int8 NOT NULL,
+	fsn text NULL,
+	allow_connect bool NULL,
+	registered_at timestamptz NULL,
+	"attribute" jsonb NULL,
+	CONSTRAINT tracker_pk PRIMARY KEY (id),
+	CONSTRAINT tracker_un UNIQUE (sn_type, serial_number));`
+	_, err := s.db.Exec(context.Background(), ddl)
+	if err != nil {
+		s.log.Error().Err(err).Msg("failed to create table")
+	}
+
 }
 
 func (s *Server) runDirectListener() {
