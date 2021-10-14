@@ -72,6 +72,24 @@ func (gt06 *GT06) closeAndSetErr(err error) {
 	gt06.c.Close()
 }
 
+func (gt06 *GT06) writeResponse(protocol byte, payload []byte, serial int) error {
+	gt06.log.Trace().Str("proccode", strconv.FormatUint(uint64(protocol), 16)).Hex("payload", payload).Int("serial", serial).Msg("writing response")
+	return gt06.write(newResponse(protocol, payload, serial))
+}
+
+func timeResponse(t *time.Time) []byte {
+	payload := []byte{byte(t.Year() % 100), byte(t.Month()), byte(t.Day()), byte(t.Hour()), byte(t.Minute()), byte(t.Second())}
+	return payload
+}
+
+func loginOk(serial int) []byte {
+	return newResponse(loginMessage, []byte{}, serial)
+}
+
+func statusOk(serial int) []byte {
+	return newResponse(statusInformation, []byte{}, serial)
+}
+
 func (gt06 *GT06) write(d []byte) error {
 	_, err := gt06.c.Write(d)
 	if err != nil {
@@ -165,7 +183,8 @@ func (gt06 *GT06) run() {
 			gt06.log.Info().Str("event", "login").Uint64("sn", sn).Uint64("tid", gt06.tid).Msg("login accepted")
 			// gt06.session.Stat.ConnectEv(gt06.c.Created())
 			gt06.log.Context = log.NewContext(gt06.log.Context).Uint64("tid", gt06.tid).Value()
-			err := gt06.write(loginOk(gt06.msg.Serial))
+			err := gt06.writeResponse(loginMessage, []byte{}, gt06.msg.Serial)
+			// err := gt06.write(loginOk(gt06.msg.Serial))
 			if err != nil {
 				gt06.closeAndSetErr(err)
 				return
@@ -199,14 +218,17 @@ func (gt06 *GT06) run() {
 		case byte(timeCheck):
 			gt06.log.Info().Str("procode", procode).Msg("terminal time update")
 			t := time.Now().UTC()
-			err := gt06.write(timeResponse(&t, gt06.msg.Serial))
+			gt06.log.Info().Str("procode", procode).Time("update", t).Msg("sending time response")
+			err := gt06.writeResponse(timeCheck, timeResponse(&t), gt06.msg.Serial)
+			// err := gt06.write(timeResponse(&t, gt06.msg.Serial))
 			if err != nil {
 				gt06.closeAndSetErr(err)
 				return
 			}
 		case byte(statusInformation):
 			st := parseStatusInformation(gt06.msg.Payload)
-			err := gt06.write(statusOk(gt06.msg.Serial))
+			err := gt06.writeResponse(statusInformation, []byte{}, gt06.msg.Serial)
+			// err := gt06.write(statusOk(gt06.msg.Serial))
 			if err != nil {
 				gt06.closeAndSetErr(err)
 				return

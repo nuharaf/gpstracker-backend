@@ -134,7 +134,7 @@ func parseStatusInformation(d []byte) *statusInfo {
 
 func parseGT06GPSMessage(d []byte) *gt06GPSMessage {
 	m := &gt06GPSMessage{}
-	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.UTC)
+	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.Local)
 	m.SatCount = int(d[6] & 0x0F)
 	lat := float64(binary.BigEndian.Uint32(d[7:11])) / 1800000
 	lon := float64(binary.BigEndian.Uint32(d[11:15])) / 1800000
@@ -200,19 +200,6 @@ func parseGK310GPSMessage(d []byte) *gk310GPSMessage {
 		m.GPSIsReupload = d[28] != 0
 	}
 	return m
-}
-
-func timeResponse(t *time.Time, serial int) []byte {
-	payload := []byte{byte(t.Year() % 100), byte(t.Month()), byte(t.Day()), byte(t.Hour()), byte(t.Minute()), byte(t.Second())}
-	return newResponse(timeCheck, payload, serial)
-}
-
-func loginOk(serial int) []byte {
-	return newResponse(loginMessage, []byte{}, serial)
-}
-
-func statusOk(serial int) []byte {
-	return newResponse(statusInformation, []byte{}, serial)
 }
 
 func newResponse(protocol byte, payload []byte, serial int) []byte {
