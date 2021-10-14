@@ -159,7 +159,7 @@ func (gt06 *GT06) run() {
 		if ok {
 			gt06.session = session
 			if lm.HasTimeOffset {
-				gt06.offset = &lm.TimeOffset
+				gt06.offset = &(lm.TimeOffset)
 			}
 			gt06.tid = gt06.session.TrackerId
 			gt06.log.Info().Str("event", "login").Uint64("sn", sn).Uint64("tid", gt06.tid).Msg("login accepted")
@@ -223,7 +223,7 @@ func (gt06 *GT06) run() {
 			gt06.lastGK310Location = loc
 			gt06.log.Debug().Str("procode", procode).Bool("ACC", loc.ACC).Msg("terminal location update code 22")
 		case byte(gt06GPS):
-			loc := parseGT06GPSMessage(gt06.msg.Payload, gt06.offset)
+			loc := parseGT06GPSMessage(gt06.msg.Payload)
 			mps_speed := (float32(loc.Speed) * 1000) / 3600
 			gt06.store.Put(fsn, loc.Latitude, loc.Longitude, -1, mps_speed, loc.Timestamp, tread)
 			gt06.session.Sublist.MarshalSend(gt06.tid, loc.Latitude, loc.Longitude, mps_speed, loc.Timestamp, tread)

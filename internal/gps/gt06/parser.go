@@ -99,9 +99,11 @@ type loginMsg struct {
 }
 
 func parseLoginMessage(d []byte) *loginMsg {
-	m := &loginMsg{}
+	m := &loginMsg{HasTimeOffset: false}
 	m.SN = hex.EncodeToString(d[:8])
-	copy(m.TypeID[:], d[8:10])
+	if len(d) > 8 {
+		copy(m.TypeID[:], d[8:10])
+	}
 	if len(d) > 10 {
 		m.HasTimeOffset = true
 		bcdOffset := (uint16(d[10]) << 4) + (uint16(d[11]) >> 4)
@@ -130,10 +132,9 @@ func parseStatusInformation(d []byte) *statusInfo {
 	return m
 }
 
-func parseGT06GPSMessage(d []byte, time_offset *time.Duration) *gt06GPSMessage {
+func parseGT06GPSMessage(d []byte) *gt06GPSMessage {
 	m := &gt06GPSMessage{}
 	m.Timestamp = time.Date(int(d[0])+2000, time.Month(d[1]), int(d[2]), int(d[3]), int(d[4]), int(d[5]), 0, time.UTC)
-	m.Timestamp = m.Timestamp.Add(-*time_offset)
 	m.SatCount = int(d[6] & 0x0F)
 	lat := float64(binary.BigEndian.Uint32(d[7:11])) / 1800000
 	lon := float64(binary.BigEndian.Uint32(d[11:15])) / 1800000
