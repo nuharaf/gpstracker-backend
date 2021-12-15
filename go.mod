@@ -19,7 +19,8 @@ require (
 	github.com/jackc/pgerrcode v0.0.0-20201024163028-a0d42d470451 // indirect
 	github.com/jackc/pgx/v4 v4.13.0
 	github.com/nats-io/nats.go v1.11.0
-	github.com/phuslu/log v1.0.75
+	github.com/phuslu/log v1.0.76
+	github.com/pires/go-proxyproto v0.6.1
 	github.com/prometheus/tsdb v0.7.1 // indirect
 	github.com/rs/zerolog v1.25.0
 	github.com/spf13/afero v1.6.0 // indirect
