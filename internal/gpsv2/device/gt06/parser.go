@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"strconv"
 	"time"
 
 	"github.com/phuslu/log"
@@ -56,14 +57,15 @@ func (d *deviceSn) MarshalObject(e *log.Entry) {
 }
 
 func (s *statusInfo) MarshalObject(e *log.Entry) {
-	e.Bool("acc", s.ACC).Int("voltage", s.Voltage).Int("signal", s.GSMSignal).Bool("engine_disc", s.EngineDisc).Bool("charging", s.Charging)
+	e.Bool("acc", s.ACC).Int("voltage", s.Voltage).Int("signal", s.GSMSignal).Bool("engine_disc", s.EngineDisc).Bool("charging", s.Charging).Str("alarm_code", strconv.FormatInt(int64(s.AlarmCode), 2))
 }
 
 func parseDeviceSn(d []byte) deviceSn {
 	m := deviceSn{}
 	m.imei = hex.EncodeToString(d[:8])
 	m.imsi = hex.EncodeToString(d[8:16])
-	m.iccid = hex.EncodeToString(d[16:24])
+	m.iccid = hex.EncodeToString(d[16:26])
+	m.iccid = m.iccid[:len(m.iccid)-1]
 	return m
 }
 
@@ -88,31 +90,35 @@ type gk310GPSMisc struct {
 }
 
 type gt06GPSMessage struct {
-	Timestamp       time.Time
-	Latitude        float64
-	Longitude       float64
-	Course          uint16
-	SatCount        int
-	Speed           float32
-	MCC             int
-	MNC             int
-	LAC             int
-	CellID          int
+	Timestamp time.Time
+	Latitude  float64
+	Longitude float64
+	Course    uint16
+	SatCount  int
+	Speed     float32
+	gt06CellInfo
 	GPSDifferential bool
 	GPSPositioned   bool
 }
 
+type gt06CellInfo struct {
+	MCC    int `json:"mcc"`
+	MNC    int `json:"mnc"`
+	LAC    int `json:"lac"`
+	CellID int `json:"cell_id"`
+}
+
 type statusInfo struct {
-	Arm          bool
-	ACC          bool
-	EngineDisc   bool
-	Charging     bool
-	AlarmCode    int
-	AltAlarmCode int
-	Language     int
-	GPS          bool
-	Voltage      int
-	GSMSignal    int
+	Armed        bool `json:"armed"`
+	ACC          bool `json:"acc"`
+	EngineDisc   bool `json:"engine_disconnected"`
+	Charging     bool `json:"charging"`
+	AlarmCode    int  `json:"alarm_code"`
+	AltAlarmCode int  `json:"alt_alarm_code"`
+	Language     int  `json:"language"`
+	GPS          bool `json:"gps"`
+	Voltage      int  `json:"voltage"`
+	GSMSignal    int  `json:"gsm_signal"`
 }
 
 type LoginMessage struct {
@@ -167,7 +173,7 @@ func parseStatusInformation(d []byte) statusInfo {
 	m.AlarmCode = int(d[0]&0b00111000) >> 3
 	m.Charging = d[0]&0b00000100 != 0
 	m.ACC = d[0]&0b00000010 != 0
-	m.Arm = d[0]&0b00000001 != 0
+	m.Armed = d[0]&0b00000001 != 0
 	m.Voltage = int(d[1])
 	m.GSMSignal = int(d[2])
 	m.AltAlarmCode = int(d[3])

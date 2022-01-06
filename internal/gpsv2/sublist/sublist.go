@@ -2,6 +2,7 @@ package sublist
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 	"time"
 
@@ -88,7 +89,7 @@ func (s *SublistMap) GetSublist(key uint64, create bool) (*Sublist, bool) {
 			m.key = key
 			m.mu = &sync.Mutex{}
 			m.prune_dur = 20 * time.Second
-			m.data = []byte{}
+			m.data = []byte(fmt.Sprintf(`{"tracker_id" : %d}`, key))
 			s.list[key] = m
 			return &m, true
 		}
@@ -110,7 +111,7 @@ func (s *Sublist) Unsubscribe(sub subscriber.Subscriber) {
 
 func (s *Sublist) MarshalSend(lat, lon float64, speed float32, gps_time, server_time time.Time) {
 	s.mu.Lock()
-	obj := downstream_type{TrackerRid: s.key, GpsTime: gps_time, ServerTime: server_time, Speed: speed, Latitude: lat, Longitude: lon}
+	obj := downstream_type{TrackerId: s.key, GpsTime: gps_time, ServerTime: server_time, Speed: speed, Latitude: lat, Longitude: lon}
 	s.data, _ = json.Marshal(obj)
 	for sub := range s.list {
 		closed := sub.Push(s.key, s.data)
@@ -122,7 +123,7 @@ func (s *Sublist) MarshalSend(lat, lon float64, speed float32, gps_time, server_
 }
 
 type downstream_type struct {
-	TrackerRid uint64    `json:"rid"`
+	TrackerId  uint64    `json:"tid"`
 	ServerTime time.Time `json:"server_time"`
 	GpsTime    time.Time `json:"gps_time"`
 	Latitude   float64   `json:"latitude"`

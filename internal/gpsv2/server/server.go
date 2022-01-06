@@ -72,14 +72,15 @@ type Server struct {
 	db            *pgxpool.Pool
 	config        *ServerConfig
 	cid_counter   uint64
-	store         store.Store
+	store         store.LocationStore
+	misc_store    store.MiscStore
 	listener      net.Listener
 	proxylistener proxyproto.Listener
 	device_list   *DeviceList
 	sublist       *sublist.SublistMap
 }
 
-func NewServer(db *pgxpool.Pool, store store.Store, sublistmap *sublist.SublistMap, config *ServerConfig) *Server {
+func NewServer(db *pgxpool.Pool, store store.LocationStore, misc_store store.MiscStore, sublistmap *sublist.SublistMap, config *ServerConfig) *Server {
 
 	s := &Server{}
 	s.log = log.DefaultLogger
@@ -87,6 +88,7 @@ func NewServer(db *pgxpool.Pool, store store.Store, sublistmap *sublist.SublistM
 	s.config = config
 	s.db = db
 	s.store = store
+	s.misc_store = misc_store
 	s.device_list = &DeviceList{fsnlist: make(map[string]uint64), list: make(map[uint64]Device)}
 	s.sublist = sublistmap
 	return s
@@ -126,6 +128,14 @@ func (s *Server) GetDevice(tid uint64) (Device, bool) {
 	d, ok := s.device_list.list[tid]
 	return d, ok
 
+}
+
+func (s *Server) StopDevice(tid uint64) bool {
+	s.device_list.mu.Lock()
+	defer s.device_list.mu.Unlock()
+	d, ok := s.device_list.list[tid]
+	d.Dev.Stop()
+	return ok
 }
 
 func (s *Server) NewLoginHandler(c *conn.Conn) *LoginHandler {
@@ -213,27 +223,32 @@ func (s *Server) add_tracker_default(sn_type string, serial uint64) (uint64, *de
 
 }
 
-func (s *Server) fetch_config(sn_type string, serial uint64) (uint64, *device.DeviceConfig, error) {
+func (s *Server) register_and_fetch_config_attr(protocol string, sn_type string, serial uint64) (uint64, *device.DeviceConfigAttribute, error) {
 
 	var tid uint64
-	var conf device.DeviceConfig
-	selectSql := `SELECT id ,config FROM "tracker" where sn_type = $1 AND serial_number =$2`
-	err := s.db.QueryRow(context.Background(), selectSql, sn_type, serial).Scan(&tid, &conf)
+	var conf_attr device.DeviceConfigAttribute
+	conf := device.DeviceConfig{}
+	attr := make(map[string]string)
 
+	selectSql := `SELECT id ,config,attribute FROM "tracker" where sn_type = $1 AND serial_number =$2`
+	err := s.db.QueryRow(context.Background(), selectSql, sn_type, serial).Scan(&tid, &conf, &attr)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			tid, conf, err := s.add_tracker_default(sn_type, serial)
 			if err != nil {
 				return 0, nil, err
 			} else {
-				return tid, conf, err
+				conf_attr.Config = conf
+				return tid, &conf_attr, nil
 			}
 		} else {
 			s.log.Error().Err(err).Msg("error while querying tracker by serial")
 			return 0, nil, err
 		}
 	} else {
-		return tid, &conf, err
+		conf_attr.Attribute = attr
+		conf_attr.Config = &conf
+		return tid, &conf_attr, nil
 	}
 }
 
@@ -257,7 +272,7 @@ func (s *Server) fetch_config(sn_type string, serial uint64) (uint64, *device.De
 
 func (h *LoginHandler) handle() {
 	var err error
-	_ = h.c.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_ = h.c.SetReadDeadline(time.Now().Add(2 * time.Second))
 	b, err := h.c.Peek(1)
 	if err != nil {
 		h.s.log.Error().Err(err).Str("event", LOGIN_MESSAGE_ERROR).EmbedObject(h.c).Msg("error peeking from connection, will close")
@@ -321,21 +336,22 @@ func (h *LoginHandler) handleAsGT06() {
 				h.s.log.Trace().EmbedObject(h).Msgf("replacing older connection for %d", sn)
 				dev.Dev.ReplaceConn(h.c)
 			} else {
-				tid, conf, err := h.s.fetch_config("imei", sn)
+				tid, conf_attr, err := h.s.register_and_fetch_config_attr("gt06", "imei", sn)
 				if err != nil {
 					h.c.Close()
 					return
 				}
-				if !conf.AllowConnect {
+				if !conf_attr.Config.AllowConnect {
 					h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).Msgf("device %s not alloweed to connect", fsn)
 					h.c.Close()
 					return
 				}
 				h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).Msgf("new device %s", fsn)
 				var logger = log.DefaultLogger
-				logger.Level = log.ParseLevel(conf.LogLevel)
+				logger.Level = log.ParseLevel(conf_attr.Config.LogLevel)
 				s, _ := h.s.sublist.GetSublist(tid, true)
-				dev := gt06.NewGT06(tid, fsn, h.c, h.s.store, logger, &loginMessage, s, conf)
+				param := gt06.GT06Param{Store: h.s.store, Logger: logger, Sublist: s}
+				dev := gt06.NewGT06(tid, fsn, h.c, &loginMessage, &param, conf_attr)
 				dev.Run()
 				h.s.device_list.addDevice(fsn, tid, dev, device.DEVICE_GT06)
 			}
@@ -381,21 +397,21 @@ func (h *LoginHandler) handleAsSimpleJson() {
 			h.s.log.Trace().EmbedObject(h).Msgf("replacing older connection for %d", sn)
 			dev.Dev.ReplaceConn(h.c)
 		} else {
-			tid, conf, err := h.s.fetch_config(sn_type, sn)
+			tid, conf_attr, err := h.s.register_and_fetch_config_attr("simplejson", sn_type, sn)
 			if err != nil {
 				h.c.Close()
 				return
 			}
-			if !conf.AllowConnect {
+			if !conf_attr.Config.AllowConnect {
 				h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).Msgf("device %s not alloweed to connect", fsn)
 				h.c.Close()
 				return
 			}
 			h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).Msgf("new device %s", fsn)
 			var logger = log.DefaultLogger
-			logger.Level = log.ParseLevel(conf.LogLevel)
+			logger.Level = log.ParseLevel(conf_attr.Config.LogLevel)
 			s, _ := h.s.sublist.GetSublist(tid, true)
-			dev := simplejson.NewSimpleJSON(h.c, h.s.store, logger, &loginMessage, s, conf)
+			dev := simplejson.NewSimpleJSON(h.c, h.s.store, logger, &loginMessage, s, conf_attr.Config)
 			dev.Run()
 			h.s.device_list.addDevice(fsn, tid, dev, device.DEVICE_GT06)
 		}

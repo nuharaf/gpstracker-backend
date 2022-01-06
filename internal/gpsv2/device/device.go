@@ -14,6 +14,12 @@ const (
 
 type DeviceIf interface {
 	ReplaceConn(c *conn.Conn)
+	Stop()
+}
+type FSN struct {
+	SnType string
+	Serial uint64
+	Base   int
 }
 
 type DeviceInfoIf interface {
@@ -38,10 +44,16 @@ func SplitFSN(fsn string) (string, uint64, error) {
 	return sntypesn[0], sn, err
 }
 
+type DeviceConfigAttribute struct {
+	Config    *DeviceConfig
+	Attribute map[string]string
+}
+
 type DeviceConfig struct {
-	AllowConnect   bool   `json:"allow_connect"`
-	AllowSubscribe bool   `json:"allow_subscribe"`
-	Store          bool   `json:"store"`
-	Broadcast      bool   `json:"broadcast"`
-	LogLevel       string `json:"log_level"`
+	AllowConnect bool   `json:"allow_connect"`
+	SublistSend  bool   `json:"sublist_send"`
+	Store        bool   `json:"store"`
+	Broadcast    bool   `json:"broadcast"`
+	LogLevel     string `json:"log_level"`
+	ReadDeadline int    `json:"read_deadline"`
 }

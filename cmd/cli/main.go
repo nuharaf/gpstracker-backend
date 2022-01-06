@@ -11,9 +11,11 @@ import (
 	gpsv2 "nuha.dev/gpstracker/internal/gpsv2/server"
 	"nuha.dev/gpstracker/internal/gpsv2/sublist"
 	"nuha.dev/gpstracker/internal/store/impl/pgstore"
-	"nuha.dev/gpstracker/internal/web"
-	"nuha.dev/gpstracker/internal/web/monitoring"
-	ws "nuha.dev/gpstracker/internal/web/webstream"
+	"nuha.dev/gpstracker/internal/webapp"
+
+	"net/http"
+
+	ws "nuha.dev/gpstracker/internal/webapp/tracker/webstream"
 )
 
 func main() {
@@ -24,13 +26,11 @@ func main() {
 	// gps_server_mock_store := flag.Bool("gps_mock_store", true, "mock gps store")
 	gps_server_listen_addr := flag.String("gps_address", ":6000", "gps server address to listen to")
 	ws_server := flag.Bool("ws_server", true, "run ws server")
-	ws_server_mock_login := flag.Bool("ws_mock_login", true, "mock ws login")
+	ws_server_mock_login := flag.Bool("ws_mock_login", false, "mock ws login")
 	ws_server_listen_addr := flag.String("ws_address", ":7000", "ws server address to listen to")
 	api_server := flag.Bool("api_server", true, "run api server")
 	api_server_listen_addr := flag.String("api_address", ":3333", "api server address to listen to")
 	api_server_cookie_domain := flag.String("cookie_domain", "localhost", "domain to set the cookie")
-	mon_server := flag.Bool("mon_server", true, "run monitoring server")
-	mon_server_listen_addr := flag.String("mon_address", "localhost:3334", "monitoring server address to listen to")
 	flag.Parse()
 	log.DefaultLogger.Level = log.TraceLevel
 
@@ -40,6 +40,7 @@ func main() {
 	}
 
 	store := pgstore.NewStore(pool, "locations", &pgstore.StoreConfig{BufSize: 10, TickerDur: 50 * time.Second, MaxAgeFlush: 50 * time.Second})
+	misc_store := pgstore.NewMiscStore(pool)
 	store.Run()
 	wg := sync.WaitGroup{}
 	var srv *gpsv2.Server
@@ -50,7 +51,7 @@ func main() {
 	// }
 	sublistmap := sublist.NewSublistMap()
 	if *gps_server {
-		srv = gpsv2.NewServer(pool, store, sublistmap, &gpsv2.ServerConfig{ListenerAddr: *gps_server_listen_addr})
+		srv = gpsv2.NewServer(pool, store, misc_store, sublistmap, &gpsv2.ServerConfig{ListenerAddr: *gps_server_listen_addr})
 		go srv.Run()
 		wg.Add(1)
 	}
@@ -61,16 +62,16 @@ func main() {
 		wg.Add(1)
 	}
 	if *api_server {
-		api := web.NewApi(pool, srv, &web.ApiConfig{ListenAddr: *api_server_listen_addr, CookieDomain: *api_server_cookie_domain, VerifyCSRF: true})
+		api := webapp.NewApi(pool, srv, &webapp.ApiConfig{ListenAddr: *api_server_listen_addr, CookieDomain: *api_server_cookie_domain, VerifyCSRF: true})
 		go api.Run()
 		wg.Add(1)
 	}
+	wg.Add(1)
+	go func() {
 
-	if *mon_server {
-		mon := monitoring.NewMonApi(srv, &monitoring.MonitoringConfig{ListenAddr: *mon_server_listen_addr})
-		go mon.Run()
-		wg.Add(1)
-	}
+		http.ListenAndServe("localhost:6060", nil)
+
+	}()
 	wg.Wait()
 
 }

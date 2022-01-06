@@ -68,10 +68,12 @@ func NewWebstream(db *pgxpool.Pool, gps_server *gpsv2.Server, sublistmap *sublis
 	o.log.Context = log.NewContext(nil).Str("module", "websocket").Value()
 	o.gsrv = gps_server
 	o.db = db
+	o.sublistmap = sublistmap
 	return o
 }
 
 func (ws *WebstreamServer) Run() {
+	ws.log.Info().Msgf("starting ws-server on : %s", ws.server.Addr)
 	err := ws.server.ListenAndServe()
 	if err != nil {
 		ws.log.Error().Err(err).Msg("")
@@ -83,7 +85,6 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		InsecureSkipVerify: true, CompressionMode: websocket.CompressionDisabled,
 	})
-	defer c.Close(websocket.StatusInternalError, "unhandled error")
 
 	if err != nil {
 		ws.log.Error().Err(err).Msg("Error while upgrading websocket")
@@ -99,39 +100,41 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 	}
 	ws.log.Info().Msg("websocket token received")
 
-	var user_id, session_id string
-	var valid bool
-	if !ws.config.MockToken {
-		valid, user_id, session_id = ws.validate_token(r.Context(), string(msg))
-		if !valid {
-			c.Close(websocket.StatusPolicyViolation, "invalid token")
-		}
+	valid, session_id := ws.validate_token(r.Context(), string(msg))
+	if !valid {
+		c.Close(websocket.StatusPolicyViolation, "invalid token")
+		ws.log.Info().Msg("invalid websocket token")
+		return
+	} else {
+		wc := &WebstreamClient{sid: session_id, srv: ws, c: c, tok: msg, log: ws.log}
+		wc.buf = make([][]byte, 0, 10)
+		wc.wg = sync.WaitGroup{}
+		wc.lock = sync.Mutex{}
+		wc.sublist = make(map[uint64]*sublist.Sublist)
+		wc.wg.Add(1)
+		go wc.writeLoop()
+		wc.wg.Add(1)
+		go wc.readloop()
+		wc.wg.Wait()
 	}
-	wc := &WebstreamClient{uid: user_id, sid: session_id, srv: ws, c: c, tok: msg, log: ws.log, lock: sync.Mutex{}, buf: make([][]byte, 0, 10), wg: sync.WaitGroup{}}
-	go wc.writeLoop()
-	go wc.readloop()
-	wc.wg.Wait()
 }
 
-func (ws *WebstreamServer) validate_token(ctx context.Context, token string) (bool, string, string) {
-	var user_id, session_id string
-	var valid_until time.Time
-	row := ws.db.QueryRow(ctx, `SELECT "user".id,session.session_id
-	FROM "user" inner join session ON session.user_id = "user".id 
-	WHERE session.ws_token = $1 
-	AND "user".init_done = TRUE 
-	AND "user".suspended = FALSE
+func (ws *WebstreamServer) validate_token(ctx context.Context, token string) (bool, string) {
+	var session_id string
+	row := ws.db.QueryRow(ctx, `SELECT session.session_id
+	FROM websocket_session INNER JOIN session ON websocket_session.session_id = session.session_id
+	WHERE websocket_session.ws_token = $1 
 	AND session.valid_until > NOW()`, token)
-	err := row.Scan(&user_id, &session_id, &valid_until)
+	err := row.Scan(&session_id)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			return false, "", ""
+			return false, ""
 		} else {
 			ws.log.Error().Err(err).Msg("")
 			panic(err)
 		}
 	} else {
-		return true, user_id, session_id
+		return true, session_id
 	}
 }
 
@@ -140,7 +143,6 @@ type WebstreamClient struct {
 	wg      sync.WaitGroup
 	srv     *WebstreamServer
 	c       *websocket.Conn
-	uid     string
 	sid     string
 	tok     []byte
 	log     log.Logger
@@ -156,11 +158,10 @@ func (wc *WebstreamClient) closeErr(err error) {
 }
 
 func (wc *WebstreamClient) readloop() {
-	wc.wg.Add(1)
+
 	defer wc.wg.Done()
 	for {
 		_, msg, err := wc.c.Read(context.Background())
-		fmt.Print(string(msg))
 		if err != nil {
 			wc.log.Error().Err(err)
 			wc.lock.Lock()
@@ -173,14 +174,20 @@ func (wc *WebstreamClient) readloop() {
 				wc.log.Debug().Strs("addsub", subname).Msg("receive add subscription message")
 				for _, v := range subname {
 					id, err := strconv.ParseUint(v, 10, 64)
-					if err != nil {
-						slist, ok := wc.srv.sublistmap.GetSublist(id, true)
-						if !ok {
-							wc.log.Error()
-							return
+					if err == nil {
+						_, ok := wc.sublist[id]
+						if ok {
+							wc.log.Warn().Msgf("already susbcribed tracker_id : %d", id)
+						} else {
+							slist, _ := wc.srv.sublistmap.GetSublist(id, true)
+							slist.Subscribe(wc)
+							wc.sublist[id] = slist
+							wc.log.Trace().Msgf("subscribing to %d", id)
 						}
-						slist.Subscribe(wc)
-						wc.sublist[id] = slist
+						if len(wc.sublist) > 5 {
+							wc.closeErr(fmt.Errorf("too many subscription"))
+							wc.log.Warn().Msg("debug message limit total subscription")
+						}
 					}
 
 				}
@@ -189,11 +196,12 @@ func (wc *WebstreamClient) readloop() {
 				wc.log.Debug().Strs("delsub", subname).Msg("receive delete subscription message")
 				for _, v := range subname {
 					id, err := strconv.ParseUint(v, 10, 64)
-					if err != nil {
+					if err == nil {
 						slist, ok := wc.sublist[id]
 						if ok {
 							slist.Unsubscribe(wc)
 							delete(wc.sublist, id)
+							wc.log.Trace().Msgf("unsubscribing to %d", id)
 						} else {
 							wc.log.Warn().Uint64("tracker_id", id).Msg("invalid unsub id")
 						}
@@ -205,7 +213,7 @@ func (wc *WebstreamClient) readloop() {
 }
 
 func (wc *WebstreamClient) writeLoop() {
-	wc.wg.Add(1)
+
 	defer wc.wg.Done()
 	for {
 		wc.lock.Lock()

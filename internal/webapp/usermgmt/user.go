@@ -1,48 +1,60 @@
-package service
+package admin
 
 import (
 	"context"
 	"errors"
+	"fmt"
+	"time"
 
 	"github.com/jackc/pgconn"
 	"github.com/jackc/pgerrcode"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/phuslu/log"
+	"nuha.dev/gpstracker/internal/gpsv2/server"
 	"nuha.dev/gpstracker/internal/util"
 	"nuha.dev/gpstracker/internal/webapp/common"
 )
 
 type Status string
 
-type User struct {
-	db *pgxpool.Pool
+type UserMgmt struct {
+	db  *pgxpool.Pool
+	log log.Logger
+}
+
+func NewUserMgmtApi(db *pgxpool.Pool, gps *server.Server) *UserMgmt {
+	u := &UserMgmt{}
+	u.db = db
+	u.log = log.DefaultLogger
+	return u
 }
 
 type UserModel struct {
-	Id        uint64          `json:"id"`
-	Username  string          `json:"username"`
-	Password  string          `json:"password"`
-	InitDone  bool            `json:"init_done"`
-	Suspended bool            `json:"suspended"`
-	Roles     map[string]bool `json:"roles"`
+	UserId           uint64 `json:"user_id"`
+	Username         string `json:"username"`
+	Password         string `json:"password"`
+	RequireChangePwd bool   `json:"require_change_pwd"`
+	SuspendLogin     bool   `json:"suspend_login"`
+	Roles            string `json:"roles"`
 }
 
-type CreateUserRequest struct {
+type AddUserRequest struct {
 	Username      string `json:"username" validate:"required"`
 	Password      string `json:"password" validate:"required"`
-	Role          string `json:"role" validate:"oneof=monitor admin superadmin"`
+	Role          string `json:"role" validate:"oneof=tracker-monitor tracker-admin admin"`
 	SessionLength uint64 `json:"session_length" validate:"required"`
 }
 
-func (u *User) CreateUser(ctx context.Context, req *CreateUserRequest, res *common.BasicResponse) error {
+func (u *UserMgmt) AddUser(ctx context.Context, req *AddUserRequest, res *common.BasicResponse) error {
 	hashedPwd := util.CryptPwd(req.Password)
-	uuid := util.GenUUID()
-	sqlStmt := `INSERT INTO "user" (id,username,"password",init_done,suspended,role,session_length_sec,created_at) VALUES ($1,$2,$3,false,false,$4,$5,now())`
-	_, err := u.db.Exec(ctx, sqlStmt, uuid, req.Username, hashedPwd, req.Role, req.SessionLength)
+	sqlStmt := `INSERT INTO "user" (username,"password",require_change_pwd,suspend_login,role,session_length_sec) VALUES ($1,$2,true,false,$4,$5)`
+	_, err := u.db.Exec(ctx, sqlStmt, req.Username, hashedPwd, req.Role, req.SessionLength)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) {
 			if pgErr.Code == pgerrcode.UniqueViolation && pgErr.ConstraintName == "user_username_key" {
 				res.Status = -1
+				u.log.Warn().Msg("trying to create user with existing username")
 				return nil
 			}
 		}
@@ -52,7 +64,7 @@ func (u *User) CreateUser(ctx context.Context, req *CreateUserRequest, res *comm
 	return nil
 }
 
-func (u *User) GetUsers(ctx context.Context, res *[]*UserModel) error {
+func (u *UserMgmt) GetUsers(ctx context.Context, res *[]*UserModel) error {
 	sqlStmt := `SELECT id,username,"password",suspended,init_done,created_at,updated_at FROM "user"`
 	rows, _ := u.db.Query(ctx, sqlStmt)
 	defer rows.Close()
@@ -60,7 +72,9 @@ func (u *User) GetUsers(ctx context.Context, res *[]*UserModel) error {
 
 	for rows.Next() {
 		user := &UserModel{}
-		err := rows.Scan(&user.Id, &user.Username, &user.Password, &user.Suspended, &user.InitDone)
+		var pwd string
+		err := rows.Scan(&user.UserId, &user.Username, pwd, &user.SuspendLogin, &user.RequireChangePwd)
+		user.Password = fmt.Sprintf("****%s", pwd[:4])
 		if err != nil {
 			return err
 		}
@@ -71,13 +85,13 @@ func (u *User) GetUsers(ctx context.Context, res *[]*UserModel) error {
 }
 
 type SetSuspendFlagRequest struct {
-	Id      string `json:"id" validate:"required"`
+	UserId  uint64 `json:"user_id" validate:"required"`
 	Suspend bool   `json:"suspend" validate:"required"`
 }
 
-func (u *User) SuspendUser(ctx context.Context, req *SetSuspendFlagRequest, res *common.BasicResponse) error {
+func (u *UserMgmt) SetSuspendFlag(ctx context.Context, req *SetSuspendFlagRequest, res *common.BasicResponse) error {
 	sqlStmt := `UPDATE "user" SET suspend_login = $1 WHERE id = $2`
-	ct, err := u.db.Exec(ctx, sqlStmt, req.Suspend, req.Id)
+	ct, err := u.db.Exec(ctx, sqlStmt, req.Suspend, req.UserId)
 	if err != nil {
 		return err
 	}
@@ -87,6 +101,59 @@ func (u *User) SuspendUser(ctx context.Context, req *SetSuspendFlagRequest, res 
 		res.Status = -1
 	}
 	return nil
+}
+
+type ListSessionRequest struct {
+	UserId uint64 `json:"user_id" validate:"required"`
+}
+
+type ListSessionResponse struct {
+	SessionId  string    `json:"session_id"`
+	ValidUntil time.Time `json:"valid_until"`
+	WsToken    string    `json:"ws_token"`
+}
+
+func (u *UserMgmt) ListSession(ctx context.Context, req *ListSessionRequest, res *[]*ListSessionResponse) error {
+	sqlStmt := `SELECT session.session_id,websocket_session.ws_token, session.valid_until FROM session LEFT JOIN websocket_session ON websocket_session.session_id = session.session_id WHERE session.user_id = $1`
+	rows, _ := u.db.Query(ctx, sqlStmt, req.UserId)
+	defer rows.Close()
+	sessions := make([]*ListSessionResponse, 0)
+
+	for rows.Next() {
+		sess := &ListSessionResponse{}
+		err := rows.Scan(&sess.SessionId, &sess.WsToken, &sess.ValidUntil)
+		if err != nil {
+			return err
+		}
+		sessions = append(sessions, sess)
+	}
+	*res = sessions
+	return nil
+}
+
+type PurgeSessionRequest struct {
+	UserId uint64 `json:"user_id" validate:"required"`
+	All    bool   `json:"all"`
+}
+
+type PurgeSessionResponse struct {
+	Count int64 `json:"user_id"`
+}
+
+func (u *UserMgmt) PurgeSession(ctx context.Context, req *PurgeSessionRequest, res *PurgeSessionResponse) error {
+	var sqlExec string
+	if req.All {
+		sqlExec = `DELETE FROM session WHERE session.user_id = $1`
+	} else {
+		sqlExec = `DELETE FROM  session where session.user_id = $1 AND session.valid_until > now()`
+	}
+	ct, err := u.db.Exec(ctx, sqlExec, req.UserId)
+	if err != nil {
+		return err
+	}
+	res.Count = ct.RowsAffected()
+	return nil
+
 }
 
 // type ChangePasswordRequest struct {

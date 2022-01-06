@@ -2,10 +2,12 @@ package tracker
 
 import (
 	"context"
+
 	"time"
 
 	"github.com/jackc/pgx/v4"
 	"github.com/jackc/pgx/v4/pgxpool"
+	"github.com/phuslu/log"
 	"nuha.dev/gpstracker/internal/gpsv2/device"
 	"nuha.dev/gpstracker/internal/gpsv2/device/gt06"
 	"nuha.dev/gpstracker/internal/gpsv2/server"
@@ -46,22 +48,25 @@ type TrackerStatusResponseModel struct {
 }
 
 type TrackerDetailModel struct {
-	TrackerId    uint64 `json:"tracker_id"`
-	SnType       string `json:"sn_type"`
-	SerialNumber uint64 `json:"serial_number"`
-	FSN          string `json:"fsn"`
+	TrackerId    uint64            `json:"tracker_id"`
+	SnType       string            `json:"sn_type"`
+	SerialNumber uint64            `json:"serial_number"`
+	FSN          string            `json:"fsn"`
+	Protocol     string            `json:"protocol"`
+	Attributes   map[string]string `json:"attributes"`
 }
 
 type Tracker struct {
 	db  *pgxpool.Pool
 	gps *server.Server
+	log log.Logger
 }
 
 func NewTrackerApi(db *pgxpool.Pool, gps *server.Server) *Tracker {
 	t := &Tracker{}
 	t.db = db
 	t.gps = gps
-
+	t.log = log.DefaultLogger
 	return t
 }
 
@@ -125,12 +130,14 @@ type TrackerHistoryResponseModel struct {
 // }
 
 func (t *Tracker) GetWsToken(ctx context.Context, res *common.StringResponse) error {
-	session_id := ctx.Value(common.ApiContextKeyType("session_id")).(string)
+	session := ctx.Value(common.ApiContextKeyType("session_attribute")).(*common.UserSessionAtrribute)
 	select_sql := `SELECT ws_token FROM websocket_session WHERE session_id = $1`
-	err := t.db.QueryRow(ctx, select_sql, session_id).Scan(res.Value)
+	err := t.db.QueryRow(ctx, select_sql, session.SessionId).Scan(&res.Value)
 	if err != nil {
 		if err == pgx.ErrNoRows {
+			res.Value = ""
 			return nil
+
 		} else {
 			return err
 		}
@@ -139,42 +146,43 @@ func (t *Tracker) GetWsToken(ctx context.Context, res *common.StringResponse) er
 }
 
 func (t *Tracker) CreateWsToken(ctx context.Context, res *common.StringResponse) error {
-	session_id := ctx.Value(common.ApiContextKeyType("session_id")).(string)
+	session := ctx.Value(common.ApiContextKeyType("session_attribute")).(*common.UserSessionAtrribute)
 	ws_token := util.GenRandomString([]byte{}, 32)
 	create_sql := `INSERT INTO websocket_session VALUES ($1,$2) ON CONFLICT (session_id) DO UPDATE SET ws_token = $1 `
-	_, err := t.db.Exec(ctx, create_sql, ws_token, session_id)
+	_, err := t.db.Exec(ctx, create_sql, ws_token, session.SessionId)
 	if err != nil {
 		return err
 	} else {
+		res.Value = ws_token
 		return nil
 	}
 }
 
 func (t *Tracker) EditTrackerSettings(ctx context.Context, req *EditTrackerRequestModel, res *common.BasicResponse) error {
 	sqlStmt := `UPDATE tracker SET config = config || $1 where tracker.id = $2`
-	_, err := t.db.Exec(ctx, sqlStmt, req.Settings, req.TrackerId)
+	ct, err := t.db.Exec(ctx, sqlStmt, req.Settings, req.TrackerId)
 	if err != nil {
-		if err == pgx.ErrNoRows {
-			res.Status = -1
-			res.Message = err.Error()
-		} else {
-			return err
-		}
+		return err
 	} else {
-		res.Status = 0
+		if ct.RowsAffected() < 1 {
+			res.Status = -1
+		} else {
+			res.Status = 0
+		}
 	}
 	return nil
 }
 
 func (t *Tracker) GetTrackers(ctx context.Context, res *[]*TrackerDetailModel) error {
-	sqlStmt := `SELECT id,sn_type,serial_number FROM tracker`
+	sqlStmt := `SELECT id,sn_type,serial_number,protocol,attribute FROM tracker`
 	rows, _ := t.db.Query(ctx, sqlStmt)
 	defer rows.Close()
 	trackers := make([]*TrackerDetailModel, 0)
 
 	for rows.Next() {
 		tracker := &TrackerDetailModel{}
-		err := rows.Scan(&tracker.TrackerId, &tracker.SnType, &tracker.SerialNumber)
+		tracker.Attributes = make(map[string]string)
+		err := rows.Scan(&tracker.TrackerId, &tracker.SnType, &tracker.SerialNumber, &tracker.Protocol, &tracker.Attributes)
 		tracker.FSN = device.JoinSn(tracker.SnType, tracker.SerialNumber)
 		if err != nil {
 			return err
@@ -183,6 +191,20 @@ func (t *Tracker) GetTrackers(ctx context.Context, res *[]*TrackerDetailModel) e
 	}
 	*res = trackers
 	return nil
+}
+
+type CloseTrackerRequest struct {
+	TrackerId uint64 `json:"tracker_id"`
+}
+
+func (t *Tracker) CloseTracker(ctx context.Context, req *CloseTrackerRequest, res *common.BasicResponse) {
+	if t.gps.StopDevice(req.TrackerId) {
+		res.Status = 0
+	} else {
+		res.Status = -1
+		res.Message = "device not found"
+	}
+
 }
 
 func (t *Tracker) GetTrackerStatus(ctx context.Context, res *[]*TrackerDetailModel) {
@@ -240,6 +262,35 @@ func (t *Tracker) SendCommand(ctx context.Context, req *SendCommandReq, res *com
 			return nil
 		} else {
 			_ = gt06dev.SendMessage(req.Command, req.ServerFlag, req.Serial)
+			// res.Message = err.Error()
+			// t.reg.log.Error().Err(err).Msg("")
+			return nil
+
+		}
+	}
+
+}
+
+type SendCommand2Req struct {
+	TrackerId uint64 `json:"tracker_id"`
+	Command   string `json:"command"`
+}
+
+func (t *Tracker) SendCommand2(ctx context.Context, req *SendCommandReq, res *common.BasicResponse) error {
+	dev, ok := t.gps.GetDevice(req.TrackerId)
+	if !ok {
+		res.Status = -1
+		res.Message = "device not found"
+
+		return nil
+	} else {
+		gt06dev, ok := dev.Dev.(*gt06.GT06)
+		if !ok {
+			res.Status = -1
+			res.Message = "device is not gt06"
+			return nil
+		} else {
+			_ = gt06dev.SendCommand(req.Command)
 			// res.Message = err.Error()
 			// t.reg.log.Error().Err(err).Msg("")
 			return nil

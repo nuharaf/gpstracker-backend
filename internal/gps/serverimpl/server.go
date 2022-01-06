@@ -81,7 +81,7 @@ type Server struct {
 	cid_counter uint64
 	conn_list
 	clientsession_list
-	store store.Store
+	store store.LocationStore
 }
 
 type ServerConfig struct {
@@ -93,7 +93,7 @@ type ServerConfig struct {
 	MockStore bool
 }
 
-func NewServer(db *pgxpool.Pool, store store.Store, config *ServerConfig) *Server {
+func NewServer(db *pgxpool.Pool, store store.LocationStore, config *ServerConfig) *Server {
 
 	s := &Server{}
 	s.conn_list = conn_list{mu: sync.Mutex{}, list: make(map[uint64]client.ClientInterface)}

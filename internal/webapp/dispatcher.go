@@ -33,7 +33,7 @@ type _function struct {
 func has_role(role string, target string) bool {
 	if target == role {
 		return true
-	} else if target == "tracker-monitor" && role == "tracker-admin" {
+	} else if target == "tracker-monitor" {
 		return true
 	} else {
 		return false
@@ -96,6 +96,7 @@ func (disp *Dispatcher) session_check(ctx context.Context, session_id string) *c
 }
 
 func (disp *Dispatcher) call(_func _function, user_session *common.UserSessionAtrribute, r *http.Request, w http.ResponseWriter) {
+	var err error
 	response := reflect.New(_func.resType)
 	var err_ref []reflect.Value
 	_ctx := context.WithValue(r.Context(), common.ApiContextKeyType("session_attribute"), user_session)
@@ -115,10 +116,10 @@ func (disp *Dispatcher) call(_func _function, user_session *common.UserSessionAt
 	} else {
 		err_ref = _func.handler.Call([]reflect.Value{reflect.ValueOf(_ctx), response})
 	}
-	err := err_ref[0].Interface().(error)
-	if err != nil {
-		panic(err)
+	if !err_ref[0].IsNil() {
+		panic(err_ref[0].Interface())
 	}
+
 	w.Header().Set("Content-Type", "application/json")
 	err = json.NewEncoder(w).Encode(response.Interface())
 	if err != nil {

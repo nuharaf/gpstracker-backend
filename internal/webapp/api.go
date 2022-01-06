@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+	"github.com/go-playground/validator/v10"
 	"github.com/jackc/pgx/v4/pgxpool"
 	"github.com/phuslu/log"
 	"nuha.dev/gpstracker/internal/gpsv2/server"
@@ -21,15 +22,20 @@ type ApiConfig struct {
 }
 
 type Api struct {
-	r          chi.Router
-	s          *http.Server
-	config     *ApiConfig
-	log        log.Logger
-	master_key string
+	r      chi.Router
+	s      *http.Server
+	config *ApiConfig
+	log    log.Logger
+	db     *pgxpool.Pool
+	vld    *validator.Validate
 }
 
 func NewApi(db *pgxpool.Pool, gps *server.Server, config *ApiConfig) *Api {
 	api := &Api{config: config}
+	api.db = db
+	api.log = log.DefaultLogger
+	api.log.Context = log.NewContext(nil).Str("module", "api-server").Value()
+	api.vld = validator.New()
 	r := chi.NewRouter()
 	r.Use(cors.Handler(cors.Options{
 		// AllowedOrigins:   []string{"https://foo.com"}, // Use this to allow specific origin hosts
@@ -41,50 +47,52 @@ func NewApi(db *pgxpool.Pool, gps *server.Server, config *ApiConfig) *Api {
 		AllowCredentials: false,
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	}))
-	// if config.EnableMasterKey {
-	// 	// api.master_key = util.GenRandomString([]byte{}, 6)
-	// 	api.master_key = "secretkey"
-	// 	api.log.Info().Str("master-key", api.master_key).Msg("")
-	// }
-	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+	// r.Use(api.recover)
 	disp := NewDispatcher(db)
 	tracker_api := tracker.NewTrackerApi(db, gps)
 	disp.Add("GetTrackers", tracker_api.GetTrackers, "tracker-monitor")
 	disp.Add("SendCommand", tracker_api.SendCommand, "tracker-admin")
+	disp.Add("SendCommand2", tracker_api.SendCommand2, "tracker-admin")
 	disp.Add("EditTrackerSettings", tracker_api.EditTrackerSettings, "tracker-admin")
+	disp.Add("CreateWsToken", tracker_api.CreateWsToken, "tracker-monitor")
+	disp.Add("GetWsToken", tracker_api.GetWsToken, "tracker-monitor")
 
-	login_handler := NewLoginHandler(db, config.CookieDomain)
-	r.Post("/func/login", login_handler.Login)
+	r.Post("/func/login", func(w http.ResponseWriter, r *http.Request) {
+		api.Login(w, r)
+	})
+	r.Post("/func/logout", func(w http.ResponseWriter, r *http.Request) {
+		api.Logout(w, r)
+	})
+	r.Post("/func/sess_check", func(w http.ResponseWriter, r *http.Request) {
+		api.SessionCheck(w, r)
+	})
 	var final_router chi.Router
 	if config.VerifyCSRF {
 		final_router = r.With(xsrf_verify)
 	} else {
 		final_router = r
 	}
-	// if config.EnableMasterKey {
-	// 	final_router = final_router.With(api.master_key_verify)
-	// }
 	final_router.Post("/func/{name}", func(w http.ResponseWriter, r *http.Request) {
 		f := chi.URLParam(r, "name")
-		if f == "InitPassword" {
-			login_handler.InitPassword(w, r)
+		if f == "ChangePassword" {
+			api.ChangePassword(w, r)
 		} else {
 			disp.Call(f, w, r)
 		}
+
 	})
 
-	api.r = r
+	api.r = final_router
 	s := &http.Server{
 		Addr:           api.config.ListenAddr,
-		Handler:        r,
+		Handler:        api.r,
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
 	}
 	api.s = s
-	api.log = log.DefaultLogger
-	api.log.Context = log.NewContext(nil).Str("module", "api-server").Value()
+
 	return api
 }
 
@@ -115,3 +123,20 @@ func xsrf_verify(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// func (api *Api) recover(next http.Handler) http.Handler {
+// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// 		defer func() {
+// 			if rvr := recover(); rvr != nil {
+// 				err, ok := rvr.(error)
+// 				if ok {
+// 					// api.log.Error().Err(err).Msg("error throwed")
+// 					panic(err)
+
+// 				} else {
+// 					panic(rvr)
+// 				}
+// 			}
+// 		}()
+// 	})
+// }

@@ -33,7 +33,7 @@ type GT06 struct {
 	server  server.ServerInterface
 	tid     uint64
 	session *client.ClientSession
-	store   store.Store
+	store   store.LocationStore
 	closer  *sync.Cond
 	offset  *time.Duration //offset from device
 	runningState
@@ -54,7 +54,7 @@ type conn_stat struct {
 
 var errRejectedLogin = errors.New("login rejected")
 
-func NewGT06(c *wc.Conn, server server.ServerInterface, store store.Store) *GT06 {
+func NewGT06(c *wc.Conn, server server.ServerInterface, store store.LocationStore) *GT06 {
 	o := &GT06{c: c, buffer: make([]byte, 1000), store: store}
 
 	o.log = log.DefaultLogger

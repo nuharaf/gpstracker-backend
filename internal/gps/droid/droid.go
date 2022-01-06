@@ -66,7 +66,7 @@ type Droid struct {
 	log     log.Logger
 	login   LoginData
 	loc     LocationData
-	store   store.Store
+	store   store.LocationStore
 	session *client.ClientSession
 	closer  *sync.Cond
 	runningState
@@ -74,7 +74,7 @@ type Droid struct {
 
 var errRejectedLogin = errors.New("login rejected")
 
-func NewDroid(c *wc.Conn, server server.ServerInterface, store store.Store) *Droid {
+func NewDroid(c *wc.Conn, server server.ServerInterface, store store.LocationStore) *Droid {
 	o := &Droid{c: c, s: server}
 	o.log = log.DefaultLogger
 	o.log.Context = log.NewContext(nil).Str("module", "droid").Uint64("cid", c.Cid()).Value()

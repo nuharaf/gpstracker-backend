@@ -10,7 +10,7 @@ import (
 	"github.com/phuslu/log"
 )
 
-type Store struct {
+type PgStore struct {
 	config *StoreConfig
 	cond   *sync.Cond
 	wlock  *sync.Mutex
@@ -49,8 +49,8 @@ type record struct {
 	srvt  time.Time
 }
 
-func NewStore(db *pgxpool.Pool, table string, config *StoreConfig) *Store {
-	o := &Store{}
+func NewStore(db *pgxpool.Pool, table string, config *StoreConfig) *PgStore {
+	o := &PgStore{}
 	o.config = config
 	o.table = table
 	o.dbp = db
@@ -62,7 +62,7 @@ func NewStore(db *pgxpool.Pool, table string, config *StoreConfig) *Store {
 	return o
 }
 
-func (st *Store) Run() {
+func (st *PgStore) Run() {
 	var err error
 	st.dbc, err = st.dbp.Acquire(context.Background())
 	if err != nil {
@@ -72,7 +72,7 @@ func (st *Store) Run() {
 	go st.handle()
 }
 
-func (st *Store) timer_flusher() {
+func (st *PgStore) timer_flusher() {
 	ticker := time.NewTicker(st.config.TickerDur)
 	for t := range ticker.C {
 		st.wlock.Lock()
@@ -83,7 +83,7 @@ func (st *Store) timer_flusher() {
 	}
 }
 
-func (st *Store) Put(serial_number string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
+func (st *PgStore) Put(serial_number string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
 	rec := record{fsn: serial_number, lon: lon, lat: lat, alt: alt, speed: speed, gpst: gpst, srvt: srvt}
 	st.wlock.Lock()
 	if len(st.wbuf.buf) == 0 {
@@ -96,7 +96,7 @@ func (st *Store) Put(serial_number string, lon float64, lat float64, alt float32
 	st.wlock.Unlock()
 }
 
-func (st *Store) flush() {
+func (st *PgStore) flush() {
 	next := st.wbuf.seq + 1
 	st.wbuf.t2 = time.Now().UTC()
 	st.cond.L.Lock()
@@ -125,7 +125,7 @@ func (st *Store) flush() {
 // 	}
 // }
 
-func (st *Store) handle() {
+func (st *PgStore) handle() {
 	var err error
 	st.log.Info().Msg("starting flusher task")
 	for {
@@ -137,7 +137,7 @@ func (st *Store) handle() {
 		t1 := time.Now()
 		_, err = st.dbc.CopyFrom(context.Background(),
 			pgx.Identifier{st.table},
-			[]string{"fsn", "longitude", "latitude", "altitude", "speed", "gps_time", "server_time"},
+			[]string{"fsn", "longitude", "latitude", "altitude", "speed", "gps_timestamp", "server_timestamp"},
 			pgx.CopyFromSlice(len(buf.buf), func(i int) ([]interface{}, error) {
 				d := buf.buf[i]
 				return []interface{}{d.fsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil

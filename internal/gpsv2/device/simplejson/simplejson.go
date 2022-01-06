@@ -10,11 +10,14 @@ import (
 	"nuha.dev/gpstracker/internal/gpsv2/conn"
 	"nuha.dev/gpstracker/internal/gpsv2/device"
 	"nuha.dev/gpstracker/internal/gpsv2/sublist"
-	"nuha.dev/gpstracker/internal/gpsv2/subscriber"
 	"nuha.dev/gpstracker/internal/store"
 )
 
 type runningState int
+
+const (
+	CONNECTION_CLOSED string = "connection_closed"
+)
 
 const (
 	created runningState = iota
@@ -23,14 +26,18 @@ const (
 )
 
 type SimpleJSON struct {
-	conf    *device.DeviceConfig
-	c       *conn.Conn
-	c_next  *conn.Conn
-	tid     uint64
+	conf       *device.DeviceConfig
+	c          *conn.Conn
+	c_next     *conn.Conn
+	c_mu       sync.RWMutex
+	c_next_mu  sync.Mutex
+	stopped    bool
+	stopped_mu sync.Mutex
+
 	fsn     string
 	err     error
 	log     log.Logger
-	store   store.Store
+	store   store.LocationStore
 	msg     FrameMessage
 	sublist *sublist.Sublist
 	runningState
@@ -65,7 +72,7 @@ type lastMsg struct {
 	sat_time time.Time
 }
 
-func NewSimpleJSON(c *conn.Conn, store store.Store, logger log.Logger, login_msg *LoginMessage, sublist *sublist.Sublist, conf *device.DeviceConfig) *SimpleJSON {
+func NewSimpleJSON(c *conn.Conn, store store.LocationStore, logger log.Logger, login_msg *LoginMessage, sublist *sublist.Sublist, conf *device.DeviceConfig) *SimpleJSON {
 	o := &SimpleJSON{c: c}
 	o.log = logger
 	o.log.Context = log.NewContext(nil).Str("module", "simplejson").Value()
@@ -84,26 +91,46 @@ func (j *SimpleJSON) closeAndSetErr(err error) {
 	j.c.Close()
 }
 
+func (j *SimpleJSON) set_next_conn(c *conn.Conn) {
+	j.c_next_mu.Lock()
+	j.c_next = c
+	j.c_next_mu.Unlock()
+}
+
+func (j *SimpleJSON) set_conn(c *conn.Conn) {
+	j.c_mu.Lock()
+	j.c = c
+	j.c_mu.Unlock()
+}
+
+func (j *SimpleJSON) use_next_conn() bool {
+	j.c_next_mu.Lock()
+	defer j.c_next_mu.Unlock()
+
+	if j.c_next == nil {
+		return false
+	} else {
+		j.c_mu.Lock()
+		defer j.c_mu.Unlock()
+		j.c = j.c_next
+		return true
+	}
+}
+
 func (j *SimpleJSON) ReplaceConn(c *conn.Conn) {
+	j.log.Info().Str("event", CONNECTION_CLOSED).Msg("closing replaced connection")
 	j.rs_mu.Lock()
 	if j.runningState == running {
-		j.c_next = c
-		j.c.Close()
+		j.set_next_conn(c)
 		j.rs_mu.Unlock()
+		j.log.Info().Str("event", CONNECTION_CLOSED).Msg("closing replaced connection")
+		j.c.Close()
+
 	} else if j.runningState == paused {
-		j.c = c
-		j.runningState = running
+		j.set_conn(c)
+		j.rs_mu.Unlock()
 		go j._run()
 	}
-
-}
-
-func (j *SimpleJSON) Subscribe(sub subscriber.Subscriber) {
-	j.sublist.Subscribe(sub)
-}
-
-func (j *SimpleJSON) Unsubscribe(sub subscriber.Subscriber) {
-	j.sublist.Unsubscribe(sub)
 }
 
 func (j *SimpleJSON) Run() {
@@ -115,22 +142,47 @@ func (j *SimpleJSON) Run() {
 
 }
 
-func (j *SimpleJSON) _run() {
-	for {
-		j.run()
-		j.rs_mu.Lock()
-		if j.c_next != nil {
-			j.c = j.c_next
-			j.c_next = nil
-			j.rs_mu.Unlock()
-			continue
+func (j *SimpleJSON) Stop() {
+	j.stop()
+	j.c.Close()
+}
 
-		} else {
-			j.runningState = paused
-			j.rs_mu.Unlock()
+func (j *SimpleJSON) stop() {
+	j.stopped_mu.Lock()
+	j.stopped = true
+	j.stopped_mu.Unlock()
+}
+
+func (j *SimpleJSON) is_stopped() bool {
+	j.stopped_mu.Lock()
+	f := j.stopped
+	j.stopped_mu.Unlock()
+	return f
+}
+
+func (j *SimpleJSON) _run() {
+
+	defer func() {
+		j.rs_mu.Lock()
+		j.runningState = paused
+		j.rs_mu.Unlock()
+		j.log.Info().Msg("exit from goroutine runloop")
+	}()
+
+	j.rs_mu.Lock()
+	j.runningState = running
+	j.rs_mu.Unlock()
+	for {
+		j.run() //will block
+		if j.is_stopped() {
 			break
 		}
-
+		ok := j.use_next_conn()
+		if ok {
+			continue
+		} else {
+			break
+		}
 	}
 }
 

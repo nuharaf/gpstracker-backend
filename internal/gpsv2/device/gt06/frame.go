@@ -25,7 +25,6 @@ func readMessage(c *conn.Conn, msg *Message) error {
 	if len(msg.Buffer) < 4 {
 		return fmt.Errorf("buffer too small")
 	}
-
 	_, err := io.ReadFull(c, msg.Buffer[:4])
 	if err != nil {
 		return err
