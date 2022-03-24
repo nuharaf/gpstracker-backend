@@ -32,23 +32,24 @@ type Device struct {
 	Dev       device.DeviceIf
 	Type      string
 	TrackerId uint64
-	FSN       string
+	Serial    device.Serial
+	Deleted   bool
 }
 
 type DeviceList struct {
 	mu      sync.Mutex
 	list    map[uint64]Device
-	fsnlist map[string]uint64
+	nsnlist map[uint64]uint64
 }
 
 func (d *Device) MarshalObject(e *log.Entry) {
-	e.Str("fsn", d.FSN).Uint64("tracked_id", d.TrackerId)
+	e.Str("sn_type", d.Serial.SnTypeString()).Uint64("sn", d.Serial.Sn()).Uint64("tracker_id", d.TrackerId)
 }
 
-func (l *DeviceList) deviceFsn(fsn string) (Device, bool) {
+func (l *DeviceList) deviceNsn(nsn uint64) (Device, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	tid, ok := l.fsnlist[fsn]
+	tid, ok := l.nsnlist[nsn]
 	if !ok {
 		return Device{}, false
 	}
@@ -59,10 +60,10 @@ func (l *DeviceList) deviceFsn(fsn string) (Device, bool) {
 	return dev, true
 }
 
-func (l *DeviceList) addDevice(fsn string, tid uint64, dev device.DeviceIf, dev_type string) {
+func (l *DeviceList) addDevice(ser device.Serial, tid uint64, dev device.DeviceIf, dev_type string) {
 	l.mu.Lock()
-	l.fsnlist[fsn] = tid
-	l.list[tid] = Device{Dev: dev, Type: dev_type, TrackerId: tid, FSN: fsn}
+	l.nsnlist[ser.Nsn()] = tid
+	l.list[tid] = Device{Dev: dev, Type: dev_type, TrackerId: tid, Serial: ser}
 	l.mu.Unlock()
 }
 
@@ -89,7 +90,7 @@ func NewServer(db *pgxpool.Pool, store store.LocationStore, misc_store store.Mis
 	s.db = db
 	s.store = store
 	s.misc_store = misc_store
-	s.device_list = &DeviceList{fsnlist: make(map[string]uint64), list: make(map[uint64]Device)}
+	s.device_list = &DeviceList{nsnlist: make(map[uint64]uint64), list: make(map[uint64]Device)}
 	s.sublist = sublistmap
 	return s
 }
@@ -130,10 +131,11 @@ func (s *Server) GetDevice(tid uint64) (Device, bool) {
 
 }
 
-func (s *Server) StopDevice(tid uint64) bool {
+func (s *Server) PurgeDevice(tid uint64) bool {
 	s.device_list.mu.Lock()
 	defer s.device_list.mu.Unlock()
 	d, ok := s.device_list.list[tid]
+	d.Deleted = true
 	d.Dev.Stop()
 	return ok
 }
@@ -210,11 +212,11 @@ func (s *Server) runListener() {
 // 	}
 // }
 
-func (s *Server) add_tracker_default(sn_type string, serial uint64) (uint64, *device.DeviceConfig, error) {
+func (s *Server) add_tracker_default(nsn uint64) (uint64, *device.DeviceConfig, error) {
 	var tid uint64
 	var config device.DeviceConfig
-	query := `INSERT INTO tracker(sn_type,serial_number,config) SELECT $1,$2, config FROM config_template WHERE name='tracker_default_config' RETURNING id,config`
-	err := s.db.QueryRow(context.Background(), query, sn_type, serial).Scan(&tid, &config)
+	query := `INSERT INTO tracker(nsn,config) SELECT $1, config FROM config_template WHERE name='tracker_default_config' RETURNING id,config`
+	err := s.db.QueryRow(context.Background(), query, nsn).Scan(&tid, &config)
 	if err != nil {
 		return 0, nil, err
 	} else {
@@ -223,18 +225,18 @@ func (s *Server) add_tracker_default(sn_type string, serial uint64) (uint64, *de
 
 }
 
-func (s *Server) register_and_fetch_config_attr(protocol string, sn_type string, serial uint64) (uint64, *device.DeviceConfigAttribute, error) {
+func (s *Server) register_and_fetch_config_attr(protocol string, nsn uint64) (uint64, *device.DeviceConfigAttribute, error) {
 
 	var tid uint64
 	var conf_attr device.DeviceConfigAttribute
 	conf := device.DeviceConfig{}
 	attr := make(map[string]string)
 
-	selectSql := `SELECT id ,config,attribute FROM "tracker" where sn_type = $1 AND serial_number =$2`
-	err := s.db.QueryRow(context.Background(), selectSql, sn_type, serial).Scan(&tid, &conf, &attr)
+	selectSql := `SELECT id ,config,attribute FROM "tracker" where  nsn=$1`
+	err := s.db.QueryRow(context.Background(), selectSql, nsn).Scan(&tid, &conf, &attr)
 	if err != nil {
 		if err == pgx.ErrNoRows {
-			tid, conf, err := s.add_tracker_default(sn_type, serial)
+			tid, conf, err := s.add_tracker_default(nsn)
 			if err != nil {
 				return 0, nil, err
 			} else {
@@ -316,7 +318,6 @@ func (h *LoginHandler) handleAsGT06() {
 			return
 		} else {
 			var sn uint64
-			var sn_type = "imei"
 			sn, err = strconv.ParseUint(loginMessage.SN, 10, 64)
 			if err != nil {
 				h.s.log.Error().Err(err).Str("event", LOGIN_MESSAGE_ERROR).EmbedObject(h).Msg("error parsing serial number")
@@ -329,31 +330,31 @@ func (h *LoginHandler) handleAsGT06() {
 				h.c.Close()
 				return
 			}
-			fsn := device.JoinSn(sn_type, sn)
-			h.s.log.Info().Str("event", LOGIN_MESSAGE).EmbedObject(h).Str("serial_number_type", sn_type).Uint64("serial_number", sn).Msg("")
-			dev, ok := h.s.device_list.deviceFsn(fsn)
-			if ok {
+			ser := device.NewSerial(0, sn)
+			h.s.log.Info().Str("event", LOGIN_MESSAGE).EmbedObject(h).EmbedObject(ser).Msg("")
+			dev, ok := h.s.device_list.deviceNsn(ser.Nsn())
+			if ok && !dev.Deleted {
 				h.s.log.Trace().EmbedObject(h).Msgf("replacing older connection for %d", sn)
 				dev.Dev.ReplaceConn(h.c)
 			} else {
-				tid, conf_attr, err := h.s.register_and_fetch_config_attr("gt06", "imei", sn)
+				tid, conf_attr, err := h.s.register_and_fetch_config_attr("gt06", ser.Nsn())
 				if err != nil {
 					h.c.Close()
 					return
 				}
 				if !conf_attr.Config.AllowConnect {
-					h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).Msgf("device %s not alloweed to connect", fsn)
+					h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).EmbedObject(ser).Msg("")
 					h.c.Close()
 					return
 				}
-				h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).Msgf("new device %s", fsn)
+				h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).EmbedObject(ser).Msg("")
 				var logger = log.DefaultLogger
 				logger.Level = log.ParseLevel(conf_attr.Config.LogLevel)
 				s, _ := h.s.sublist.GetSublist(tid, true)
-				param := gt06.GT06Param{Store: h.s.store, Logger: logger, Sublist: s}
-				dev := gt06.NewGT06(tid, fsn, h.c, &loginMessage, &param, conf_attr)
+				param := gt06.GT06Param{Store: h.s.store, Logger: logger, Sublist: s, MiscStore: h.s.misc_store}
+				dev := gt06.NewGT06(tid, ser, h.c, &loginMessage, &param, conf_attr)
 				dev.Run()
-				h.s.device_list.addDevice(fsn, tid, dev, device.DEVICE_GT06)
+				h.s.device_list.addDevice(ser, tid, dev, device.DEVICE_GT06)
 			}
 		}
 	} else {
@@ -389,31 +390,39 @@ func (h *LoginHandler) handleAsSimpleJson() {
 			h.c.Close()
 			return
 		}
-		var sn_type = loginMessage.SnType
-		fsn := device.JoinSn(sn_type, sn)
-		h.s.log.Info().Str("event", LOGIN_MESSAGE).EmbedObject(h).Str("serial_number_type", sn_type).Uint64("serial_number", sn).Msg("")
-		dev, ok := h.s.device_list.deviceFsn(fsn)
-		if ok {
+		var sn_type int
+		switch loginMessage.SnType {
+		case "mac":
+			sn_type = 1
+		case "aid":
+			sn_type = 2
+		default:
+			sn_type = 5
+		}
+		ser := device.NewSerial(sn_type, sn)
+		h.s.log.Info().Str("event", LOGIN_MESSAGE).EmbedObject(h).EmbedObject(ser).Msg("")
+		dev, ok := h.s.device_list.deviceNsn(ser.Nsn())
+		if ok && !dev.Deleted {
 			h.s.log.Trace().EmbedObject(h).Msgf("replacing older connection for %d", sn)
 			dev.Dev.ReplaceConn(h.c)
 		} else {
-			tid, conf_attr, err := h.s.register_and_fetch_config_attr("simplejson", sn_type, sn)
+			tid, conf_attr, err := h.s.register_and_fetch_config_attr("simplejson", ser.Nsn())
 			if err != nil {
 				h.c.Close()
 				return
 			}
 			if !conf_attr.Config.AllowConnect {
-				h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).Msgf("device %s not alloweed to connect", fsn)
+				h.s.log.Info().Str("event", ALLOW_CONNECT_FALSE).EmbedObject(h).EmbedObject(ser).Msg("device not alloweed to connect")
 				h.c.Close()
 				return
 			}
-			h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).Msgf("new device %s", fsn)
+			h.s.log.Info().Str("event", NEW_DEVICE_CREATED).EmbedObject(h).EmbedObject(ser).Msg("new device")
 			var logger = log.DefaultLogger
 			logger.Level = log.ParseLevel(conf_attr.Config.LogLevel)
 			s, _ := h.s.sublist.GetSublist(tid, true)
 			dev := simplejson.NewSimpleJSON(h.c, h.s.store, logger, &loginMessage, s, conf_attr.Config)
 			dev.Run()
-			h.s.device_list.addDevice(fsn, tid, dev, device.DEVICE_GT06)
+			h.s.device_list.addDevice(ser, tid, dev, device.DEVICE_GT06)
 		}
 	} else {
 		h.s.log.Error().EmbedObject(h).Str("event", LOGIN_MESSAGE_ERROR).Msgf("message type is not login,type : %x", msg.Protocol)

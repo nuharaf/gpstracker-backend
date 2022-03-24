@@ -108,6 +108,10 @@ type gt06CellInfo struct {
 	CellID int `json:"cell_id"`
 }
 
+func (c *gt06CellInfo) MarshalObject(e *log.Entry) {
+	e.Int("mnc", c.MNC).Int("mcc", c.MCC).Int("lac", c.LAC).Int("cell_id", c.CellID)
+}
+
 type statusInfo struct {
 	Armed        bool `json:"armed"`
 	ACC          bool `json:"acc"`

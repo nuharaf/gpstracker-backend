@@ -40,7 +40,7 @@ func new_buffer(seq uint64, len int) buffer {
 }
 
 type record struct {
-	fsn   string
+	nsn   uint64
 	lon   float64
 	lat   float64
 	alt   float32
@@ -83,8 +83,8 @@ func (st *PgStore) timer_flusher() {
 	}
 }
 
-func (st *PgStore) Put(serial_number string, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
-	rec := record{fsn: serial_number, lon: lon, lat: lat, alt: alt, speed: speed, gpst: gpst, srvt: srvt}
+func (st *PgStore) Put(nsn uint64, lon float64, lat float64, alt float32, speed float32, gpst time.Time, srvt time.Time) {
+	rec := record{nsn: nsn, lon: lon, lat: lat, alt: alt, speed: speed, gpst: gpst, srvt: srvt}
 	st.wlock.Lock()
 	if len(st.wbuf.buf) == 0 {
 		st.wbuf.t1 = time.Now().UTC()
@@ -137,10 +137,10 @@ func (st *PgStore) handle() {
 		t1 := time.Now()
 		_, err = st.dbc.CopyFrom(context.Background(),
 			pgx.Identifier{st.table},
-			[]string{"fsn", "longitude", "latitude", "altitude", "speed", "gps_timestamp", "server_timestamp"},
+			[]string{"nsn", "longitude", "latitude", "altitude", "speed", "gps_timestamp", "server_timestamp"},
 			pgx.CopyFromSlice(len(buf.buf), func(i int) ([]interface{}, error) {
 				d := buf.buf[i]
-				return []interface{}{d.fsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil
+				return []interface{}{d.nsn, d.lon, d.lat, d.alt, d.speed, d.gpst, d.srvt}, nil
 			}))
 		if err != nil {
 			st.log.Error().Err(err).Msg("flush error")

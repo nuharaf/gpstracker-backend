@@ -107,7 +107,7 @@ func (ws *WebstreamServer) serve_http(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		wc := &WebstreamClient{sid: session_id, srv: ws, c: c, tok: msg, log: ws.log}
-		wc.buf = make([][]byte, 0, 10)
+		wc.buf = make([][]byte, 0, 20)
 		wc.wg = sync.WaitGroup{}
 		wc.lock = sync.Mutex{}
 		wc.sublist = make(map[uint64]*sublist.Sublist)
@@ -215,6 +215,7 @@ func (wc *WebstreamClient) readloop() {
 func (wc *WebstreamClient) writeLoop() {
 
 	defer wc.wg.Done()
+	delay := delay{}
 	for {
 		wc.lock.Lock()
 		l := len(wc.buf)
@@ -229,12 +230,34 @@ func (wc *WebstreamClient) writeLoop() {
 		}
 		wc.buf = wc.buf[:0]
 		wc.lock.Unlock()
-		if l == 0 {
-			time.Sleep(5 * time.Second)
-		} else {
-			time.Sleep(time.Second)
-		}
+
+		delay.update(l)
+		time.Sleep(time.Duration(delay.get_delay()) * time.Second)
 	}
+}
+
+type delay struct {
+	lower_limit_counter int
+	upper_limit_counter int
+}
+
+func (d *delay) update(n int) {
+	if n == 0 {
+		d.lower_limit_counter++
+		d.upper_limit_counter = 0
+	} else if n > 15 {
+		d.lower_limit_counter = 0
+		d.upper_limit_counter++
+	}
+}
+
+func (d *delay) get_delay() int {
+	if d.lower_limit_counter > 10 {
+		return 5
+	} else if d.upper_limit_counter > 10 {
+		return 0
+	}
+	return 1
 }
 
 func (wc *WebstreamClient) Push(sender uint64, data []byte) bool {

@@ -34,7 +34,7 @@ type SimpleJSON struct {
 	stopped    bool
 	stopped_mu sync.Mutex
 
-	fsn     string
+	ser     device.Serial
 	err     error
 	log     log.Logger
 	store   store.LocationStore
@@ -186,6 +186,24 @@ func (j *SimpleJSON) _run() {
 	}
 }
 
+func (j *SimpleJSON) GetLocation() device.Location {
+	j.lastMsg.loc_mu.Lock()
+	defer j.lastMsg.loc_mu.Unlock()
+	loc := device.Location{}
+	loc.Speed = j.lastMsg.loc.Speed
+	loc.Longitude = j.lastMsg.loc.Longitude
+	loc.Latitude = j.lastMsg.loc.Latitude
+	loc.Timestamp = j.lastMsg.loc.GpsTime
+	loc.Altitude = j.lastMsg.loc.Altitude
+	return loc
+}
+
+func (j *SimpleJSON) CurrentConnInfo() []string {
+	j.c_mu.RLock()
+	defer j.c_mu.RUnlock()
+	return j.c.ConnAddr()
+}
+
 func (j *SimpleJSON) run() {
 
 	for {
@@ -210,9 +228,11 @@ func (j *SimpleJSON) run() {
 			j.lastMsg.loc_time = tread
 			j.lastMsg.loc = loc
 			j.lastMsg.loc_mu.Unlock()
-			j.sublist.MarshalSend(loc.Latitude, loc.Longitude, loc.Speed, loc.GpsTime, tread)
+			if j.conf.SublistSend {
+				j.sublist.SendLocation(loc.Latitude, loc.Longitude, loc.Speed, loc.GpsTime, tread)
+			}
 			if j.conf.Store {
-				j.store.Put(j.fsn, loc.Latitude, loc.Longitude, loc.Altitude, loc.Speed, loc.GpsTime, tread)
+				j.store.Put(j.ser.Nsn(), loc.Latitude, loc.Longitude, loc.Altitude, loc.Speed, loc.GpsTime, tread)
 			}
 
 		case STATUS:

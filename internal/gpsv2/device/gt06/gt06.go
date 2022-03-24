@@ -1,10 +1,11 @@
 package gt06
 
 import (
-	"context"
 	"encoding/binary"
+	"encoding/json"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -65,11 +66,11 @@ type GT06 struct {
 	stopped    bool
 	stopped_mu sync.Mutex
 	attr       map[string]string
-	err        error
+	err        error_state
 	cmd        command_state
 	msg        Message
 	log        log.Logger
-	fsn        string
+	ser        device.Serial
 	tid        uint64
 	conf       *device.DeviceConfig
 	sublist    *sublist.Sublist
@@ -89,8 +90,15 @@ const (
 	command_empty
 )
 
+type error_state struct {
+	mu  sync.Mutex
+	err error
+	t   time.Time
+}
+
 type command_state struct {
 	mu                  sync.Mutex
+	sent_time           time.Time
 	status              int
 	server_flag_counter uint32
 	serial_counter      int
@@ -130,25 +138,29 @@ type gt06_location struct {
 // 	device_sn_time time.Time
 // }
 
-func NewGT06(tid uint64, fsn string, c *conn.Conn, login_msg *LoginMessage, param *GT06Param, conf_attr *device.DeviceConfigAttribute) *GT06 {
+func NewGT06(tid uint64, ser device.Serial, c *conn.Conn, login_msg *LoginMessage, param *GT06Param, conf_attr *device.DeviceConfigAttribute) *GT06 {
 	o := &GT06{c: c}
 	o.log = param.Logger
-	o.log.Context = log.NewContext(nil).Str("module", "gt06").Str("fsn", fsn).Value()
+	o.log.Context = log.NewContext(nil).Str("module", "gt06").EmbedObject(ser).Value()
 	o.store = param.Store
+	o.misc_store = param.MiscStore
 	o.runningState = created
 	o.msg.Buffer = make([]byte, 1000)
 	o.offset = &login_msg.TimeOffset
 	o.conf = conf_attr.Config
 	o.sublist = param.Sublist
 	o.tid = tid
-	o.fsn = fsn
+	o.ser = ser
 	o.attr = conf_attr.Attribute
 	o.cmd.status = command_empty
 	return o
 }
 
-func (gt06 *GT06) closeAndSetErr(err error) {
-	gt06.err = err
+func (gt06 *GT06) closeAndSetErr(err error, t time.Time) {
+	gt06.err.mu.Lock()
+	gt06.err.err = err
+	gt06.err.t = t
+	gt06.err.mu.Unlock()
 	gt06.log.Error().Err(err).Str("event", CONNECTION_CLOSED).Msg("connection closed caused by error")
 	gt06.c.Close()
 }
@@ -240,14 +252,25 @@ func (gt06 *GT06) _run() {
 // 	}
 // }
 
-func (gt06 *GT06) SendCommand(msg string) error {
-	return gt06._send_command(msg)
+func (gt06 *GT06) Error() (error, time.Time) {
+	gt06.err.mu.Lock()
+	defer gt06.err.mu.Unlock()
+	return gt06.err.err, gt06.err.t
 }
 
-func (gt06 *GT06) _send_command(msg string) error {
+func (gt06 *GT06) SendCommand(msg string, force bool) (bool, error) {
+	return gt06._send_command(msg, force)
+}
+
+func (gt06 *GT06) _send_command(msg string, force bool) (bool, error) {
 	gt06.cmd.mu.Lock()
 	if gt06.cmd.status != command_empty {
-		gt06.log.Warn().Msg("there is pending command")
+		if !force {
+			gt06.cmd.mu.Unlock()
+			return true, nil
+		} else {
+			gt06.log.Warn().Msg("there is pending command")
+		}
 	}
 	gt06.cmd.server_flag_counter++
 	gt06.cmd.serial_counter++
@@ -260,19 +283,23 @@ func (gt06 *GT06) _send_command(msg string) error {
 	d := newCommand(msg, sf, serial)
 	gt06.cmd.status = command_submitted
 	gt06.cmd.mu.Unlock()
+
 	gt06.c_mu.RLock()
 	defer gt06.c_mu.RUnlock()
 	gt06.log.Trace().Hex("sending command", d).Msg("")
 	n, err := gt06.c.Write(d)
 	if err != nil {
 		gt06.log.Error().Err(err).Msg("error when sending command")
-		return err
+		return false, err
 	} else {
 		gt06.log.Trace().Msgf("command sent %d", n)
+		t := time.Now().UTC()
 		gt06.cmd.mu.Lock()
 		gt06.cmd.status = command_sent
+		gt06.cmd.sent_time = t
 		gt06.cmd.mu.Unlock()
-		return nil
+		gt06.misc_store.SaveEvent(gt06.tid, "command.sent", msg, map[string]uint32{"server_flag": server_flag}, t)
+		return false, nil
 	}
 }
 
@@ -319,42 +346,122 @@ func (gt06 *GT06) ReplaceConn(c *conn.Conn) {
 }
 
 func (gt06 *GT06) handle_heartbeat(si statusInfo, t time.Time) {
+	changed := false
 	gt06.gt06_status.mu.Lock()
 	if gt06.gt06_status.si != si {
-		gt06.log.Info().Object("status", &si).Msg("status changed")
-		gt06.misc_store.SaveEvent(gt06.tid, "hearbeat_change", "", si, t)
-	} else if t.Sub(gt06.gt06_status.time) > 10*time.Minute { //not storing every heartbeat
-		gt06.misc_store.SaveEvent(gt06.tid, "hearbeat", "", si, t)
+		changed = true
 	}
 	gt06.gt06_status.time = t
 	gt06.gt06_status.si = si
 	gt06.gt06_status.mu.Unlock()
+
+	if changed {
+		gt06.log.Info().Object("status", &si).Msg("status changed")
+		gt06.misc_store.SaveEvent(gt06.tid, "hearbeat.changed", "", si, t)
+		buf, _ := json.Marshal(si)
+		gt06.sublist.SendEvent("heartbeat.changed", buf, t)
+	}
 }
 
 func (gt06 *GT06) handle_alarm(si statusInfo, t time.Time) {
 	gt06.gt06_status.mu.Lock()
-	gt06.misc_store.SaveEvent(gt06.tid, "alarm", "", si, t)
 	gt06.gt06_status.time = t
 	gt06.gt06_status.si = si
 	gt06.gt06_status.mu.Unlock()
+	gt06.misc_store.SaveEvent(gt06.tid, "alarm", "", si, t)
+	buf, _ := json.Marshal(si)
+	gt06.sublist.SendEvent("alarm", buf, t)
+}
+
+func (gt06 *GT06) handle_diconnection(t time.Time) {
+	gt06.misc_store.SaveEvent(gt06.tid, "disconnected", "", nil, t)
+	gt06.sublist.SendEvent("disconnected", []byte{}, t)
+}
+
+func (gt06 *GT06) event_run(t time.Time) {
+	gt06.misc_store.SaveEvent(gt06.tid, "started", "", nil, t)
+	gt06.sublist.SendEvent("started", []byte{}, t)
 }
 
 func (gt06 *GT06) handle_location(loc gt06GPSMessage, t time.Time) {
-
-}
-
-func (gt06 *GT06) update_location(loc gt06GPSMessage, t time.Time) {
+	if gt06.conf.Store {
+		gt06.store.Put(gt06.ser.Nsn(), loc.Latitude, loc.Longitude, -1, loc.Speed, loc.Timestamp, t)
+	}
+	if gt06.conf.SublistSend {
+		gt06.sublist.SendLocation(loc.Latitude, loc.Longitude, loc.Speed, loc.Timestamp, t)
+	}
+	cell_info_changed := false
 
 	gt06.gt06_location.mu.Lock()
+	if loc.gt06CellInfo != gt06.gt06_location.loc.gt06CellInfo {
+		cell_info_changed = true
+	}
 	gt06.gt06_location.loc = loc
 	gt06.gt06_location.time = t
 	gt06.gt06_location.mu.Unlock()
 
+	if cell_info_changed {
+		gt06.log.Info().Object("cell_info", &loc.gt06CellInfo).Msg("cell info changed")
+		gt06.misc_store.SaveEvent(gt06.tid, "cell_info.changed", "", loc.gt06CellInfo, t)
+	}
+}
+
+func (gt06 *GT06) GetLocation() device.Location {
+	gt06.gt06_location.mu.Lock()
+	defer gt06.gt06_location.mu.Unlock()
+	loc := device.Location{}
+	loc.Speed = gt06.gt06_location.loc.Speed
+	loc.Longitude = gt06.gt06_location.loc.Longitude
+	loc.Latitude = gt06.gt06_location.loc.Latitude
+	loc.Timestamp = gt06.gt06_location.loc.Timestamp
+	loc.Altitude = 0
+	return loc
+}
+
+func should_update_attribute(cmd string) bool {
+	if strings.EqualFold(cmd, "VERSION#") {
+		return true
+	} else if strings.EqualFold(cmd, "PARAM#") {
+		return true
+	}
+	return false
+}
+
+func (gt06 *GT06) handle_command_response(cmd_response CommandResponseMessage, t time.Time) {
+	flag_matched := false
+	do_update_attr := false
+	cmd := ""
+	gt06.cmd.mu.Lock()
+	if cmd_response.ServerFlag == gt06.cmd.current_server_flag {
+		flag_matched = true
+		gt06.cmd.status = command_empty
+		do_update_attr = should_update_attribute(gt06.cmd.current_msg)
+		cmd = gt06.cmd.current_msg
+	} else {
+		gt06.log.Error().Msgf("expecting response with server_flag %d, got %d", gt06.cmd.current_server_flag, cmd_response.ServerFlag)
+	}
+	gt06.cmd.mu.Unlock()
+	gt06.misc_store.SaveEvent(gt06.tid, "command.response", cmd_response.Message, map[string]uint32{
+		"server_flag": cmd_response.ServerFlag}, t)
+	if flag_matched {
+		gt06.misc_store.SaveCommandResponse(gt06.tid, cmd_response.ServerFlag, gt06.cmd.current_msg, gt06.cmd.sent_time, cmd_response.Message, t)
+	}
+	if do_update_attr {
+		gt06.misc_store.UpdateAttribute(gt06.tid, strings.ToUpper(cmd), cmd_response.Message)
+	}
+
+}
+
+func (gt06 *GT06) CurrentConnInfo() []string {
+	gt06.c_mu.RLock()
+	defer gt06.c_mu.RUnlock()
+	return gt06.c.ConnAddr()
 }
 
 func (gt06 *GT06) run() {
 	// var prev_procotol byte
 	gt06.c_mu.RLock()
+	gt06.event_run(time.Now())
 	defer func() {
 		gt06.c_mu.RUnlock()
 		gt06.log.Info().Msg("exit from readMessage loop")
@@ -366,18 +473,21 @@ func (gt06 *GT06) run() {
 		if err != nil {
 			if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
 				if timeout_ping_sent {
-					gt06.closeAndSetErr(err)
+					gt06.handle_diconnection(time.Now())
+					gt06.closeAndSetErr(err, time.Now())
 					return
 				} else {
 					timeout_ping_sent = true
-					err := gt06._send_command("STATUS#")
+					_, err := gt06._send_command("STATUS#", true)
 					if err != nil {
-						gt06.closeAndSetErr(err)
+						gt06.handle_diconnection(time.Now())
+						gt06.closeAndSetErr(err, time.Now())
 						return
 					}
 				}
 			} else {
-				gt06.closeAndSetErr(err)
+				gt06.handle_diconnection(time.Now())
+				gt06.closeAndSetErr(err, time.Now())
 				return
 			}
 
@@ -392,14 +502,14 @@ func (gt06 *GT06) run() {
 			gt06.log.Info().Str("procode", procode).Time("update", t).Msg("sending time response")
 			err := gt06.writeResponse(timeCheck, timeResponse(&t), gt06.msg.Serial)
 			if err != nil {
-				gt06.closeAndSetErr(err)
+				gt06.closeAndSetErr(err, time.Now())
 				return
 			}
 		case byte(statusInformation): //heartbeat
 			st := parseStatusInformation(gt06.msg.Payload)
 			err := gt06.writeResponse(statusInformation, []byte{}, gt06.msg.Serial)
 			if err != nil {
-				gt06.closeAndSetErr(err)
+				gt06.closeAndSetErr(err, time.Now())
 				return
 			}
 			gt06.handle_heartbeat(st, tread)
@@ -407,46 +517,20 @@ func (gt06 *GT06) run() {
 
 		case byte(gk310GPS):
 			loc := parseGK310GPSMessage(gt06.msg.Payload)
-			if gt06.conf.Store {
-				gt06.store.Put(gt06.fsn, loc.Latitude, loc.Longitude, -1, loc.Speed, loc.Timestamp, tread)
-			}
-			gt06.sublist.MarshalSend(loc.Latitude, loc.Longitude, loc.Speed, loc.Timestamp, tread)
-			gt06.update_location(loc.gt06GPSMessage, tread)
+			gt06.handle_location(loc.gt06GPSMessage, tread)
 			gt06.log.Debug().Str("procode", procode).Msg("location update")
-
 		case byte(gt06GPS):
 			loc := parseGT06GPSMessage(gt06.msg.Payload)
-
-			if gt06.conf.Store {
-				gt06.store.Put(gt06.fsn, loc.Latitude, loc.Longitude, -1, loc.Speed, loc.Timestamp, tread)
-			}
-			gt06.sublist.MarshalSend(loc.Latitude, loc.Longitude, loc.Speed, loc.Timestamp, tread)
-			gt06.update_location(loc, tread)
+			gt06.handle_location(loc, tread)
 			gt06.log.Debug().Str("procode", procode).Msg("location update")
 		case byte(gk310GPSAlarm):
 			gpsalm := parseGPSAlarm(gt06.msg.Payload, time.UTC)
-			loc := gpsalm.gt06GPSMessage
-			if gt06.conf.Store {
-				gt06.store.Put(gt06.fsn, loc.Latitude, loc.Longitude, -1, loc.Speed, loc.Timestamp, tread)
-			}
-			if gt06.conf.SublistSend {
-				gt06.sublist.MarshalSend(loc.Latitude, loc.Longitude, loc.Speed, loc.Timestamp, tread)
-			}
-
-			gt06.update_location(loc, tread)
+			gt06.handle_location(gpsalm.gt06GPSMessage, tread)
 			gt06.handle_alarm(gpsalm.statusInfo, tread)
 			gt06.log.Info().Str("procode", procode).Msg("location update with alarm")
 		case byte(gt06GPSAlarm):
 			gpsalm := parseGPSAlarm(gt06.msg.Payload, time.Local)
-			loc := gpsalm.gt06GPSMessage
-			if gt06.conf.Store {
-				gt06.store.Put(gt06.fsn, loc.Latitude, loc.Longitude, -1, loc.Speed, loc.Timestamp, tread)
-			}
-			if gt06.conf.SublistSend {
-				gt06.sublist.MarshalSend(loc.Latitude, loc.Longitude, loc.Speed, loc.Timestamp, tread)
-			}
-
-			gt06.update_location(loc, tread)
+			gt06.handle_location(gpsalm.gt06GPSMessage, tread)
 			gt06.handle_alarm(gpsalm.statusInfo, tread)
 			gt06.log.Info().Str("procode", procode).Msg("location update with alarm")
 		case byte(informationTxPacket):
@@ -467,26 +551,14 @@ func (gt06 *GT06) run() {
 			}
 		case byte(serverCommandResponse):
 			cmdRes := parsegk310CommandResponse(gt06.msg.Payload)
+			gt06.handle_command_response(cmdRes, tread)
 			gt06.log.Info().Uint32("server_flag", cmdRes.ServerFlag).Str("message", cmdRes.Message).Msg("command response")
-			gt06.cmd.mu.Lock()
-			if cmdRes.ServerFlag == gt06.cmd.current_server_flag {
-				gt06.cmd.status = command_empty
-				gt06.attr.UpdateString(context.TODO(), gt06.cmd.current_msg, cmdRes.Message)
-			} else {
-				gt06.log.Error().Msgf("expecting response with server_flag %d, got %d", gt06.cmd.current_server_flag, cmdRes.ServerFlag)
-			}
-			gt06.cmd.mu.Unlock()
+
 		case byte(stringInformation):
 			cmdRes := parsegt06CommandResponse(gt06.msg.Payload)
+			gt06.handle_command_response(cmdRes, tread)
 			gt06.log.Info().Uint32("server_flag", cmdRes.ServerFlag).Str("message", cmdRes.Message).Msg("command response")
-			gt06.cmd.mu.Lock()
-			if cmdRes.ServerFlag == gt06.cmd.current_server_flag {
-				gt06.cmd.status = command_empty
-				gt06.attr.UpdateString(context.TODO(), gt06.cmd.current_msg, cmdRes.Message)
-			} else {
-				gt06.log.Error().Msgf("expecting response with server_flag %d, got %d", gt06.cmd.current_server_flag, cmdRes.ServerFlag)
-			}
-			gt06.cmd.mu.Unlock()
+
 		default:
 			gt06.log.Error().Hex("data", gt06.msg.Payload).Str("procode", procode).Str("error", "unknown event protocol").Msg("unhandled event protocol")
 		}

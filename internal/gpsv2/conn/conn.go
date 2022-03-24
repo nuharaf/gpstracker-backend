@@ -29,6 +29,10 @@ func (b *Conn) Read(p []byte) (int, error) {
 	return b.r.Read(p)
 }
 
+func (b *Conn) ConnAddr() []string {
+	return b.tuple
+}
+
 func (c *Conn) MarshalObject(e *log.Entry) {
 	e.Strs("socket", c.tuple)
 }

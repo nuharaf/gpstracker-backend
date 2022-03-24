@@ -52,9 +52,16 @@ func NewApi(db *pgxpool.Pool, gps *server.Server, config *ApiConfig) *Api {
 	disp := NewDispatcher(db)
 	tracker_api := tracker.NewTrackerApi(db, gps)
 	disp.Add("GetTrackers", tracker_api.GetTrackers, "tracker-monitor")
-	disp.Add("SendCommand", tracker_api.SendCommand, "tracker-admin")
+	disp.Add("GetTrackerDetail", tracker_api.GetTrackerDetail, "tracker-monitor")
+	disp.Add("GetTrackerEvent", tracker_api.GetTrackerEvent, "tracker-monitor")
+	disp.Add("GetGT06CmdHistory", tracker_api.GetGT06CmdHistory, "tracker-monitor")
+	disp.Add("GetTrackerCurrentConnInfo", tracker_api.GetTrackerCurrentConnInfo, "tracker-monitor")
+	disp.AddRaw("GetTrackerLocationHistory", tracker_api.GetTrackerLocationHistory, "tracker-monitor")
+
 	disp.Add("SendCommand2", tracker_api.SendCommand2, "tracker-admin")
 	disp.Add("EditTrackerSettings", tracker_api.EditTrackerSettings, "tracker-admin")
+	disp.Add("SetTrackerName", tracker_api.SetTrackerName, "tracker-admin")
+	disp.Add("PurgeTracker", tracker_api.PurgeTracker, "tracker-admin")
 	disp.Add("CreateWsToken", tracker_api.CreateWsToken, "tracker-monitor")
 	disp.Add("GetWsToken", tracker_api.GetWsToken, "tracker-monitor")
 

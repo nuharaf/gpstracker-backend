@@ -39,7 +39,7 @@ func main() {
 		panic(err.Error())
 	}
 
-	store := pgstore.NewStore(pool, "locations", &pgstore.StoreConfig{BufSize: 10, TickerDur: 50 * time.Second, MaxAgeFlush: 50 * time.Second})
+	store := pgstore.NewStore(pool, "locations_history", &pgstore.StoreConfig{BufSize: 10, TickerDur: 50 * time.Second, MaxAgeFlush: 50 * time.Second})
 	misc_store := pgstore.NewMiscStore(pool)
 	store.Run()
 	wg := sync.WaitGroup{}

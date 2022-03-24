@@ -18,11 +18,14 @@ require (
 	github.com/jackc/pgconn v1.10.0 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20201024163028-a0d42d470451 // indirect
 	github.com/jackc/pgx/v4 v4.13.0
+	github.com/mustafaturan/bus/v3 v3.0.3
+	github.com/mustafaturan/monoton/v2 v2.0.2
 	github.com/nats-io/nats.go v1.11.0
 	github.com/phuslu/log v1.0.76
 	github.com/pires/go-proxyproto v0.6.1
 	github.com/prometheus/tsdb v0.7.1 // indirect
 	github.com/rs/zerolog v1.25.0
+	github.com/speps/go-hashids/v2 v2.0.1
 	github.com/spf13/afero v1.6.0 // indirect
 	github.com/spf13/viper v1.8.1
 	github.com/tmc/grpc-websocket-proxy v0.0.0-20190109142713-0ad062ec5ee5 // indirect

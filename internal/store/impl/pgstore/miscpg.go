@@ -20,16 +20,16 @@ func NewMiscStore(db *pgxpool.Pool) *PgMiscStore {
 	return &m
 }
 
-func (st *PgMiscStore) SaveCommandResponse(tid uint64, server_flag uint32, message string, t time.Time) {
-	_, err := st.db.Exec(context.Background(), `INSERT INTO gt06_command_response (server_flag,message,tracker_id,received_time) VALUES ($1,$2,$3,$4)`, server_flag, message, tid, t)
+func (st *PgMiscStore) SaveCommandResponse(tid uint64, server_flag uint32, command string, ct time.Time, response string, rt time.Time) {
+	var err error
+	_, err = st.db.Exec(context.Background(), `INSERT INTO gt06_command_response (tracker_id,server_flag,command,command_time,response,response_time) VALUES ($1,$2,$3,$4,$5,$6)`, tid, server_flag, command, ct, response, rt)
 	if err != nil {
 		st.log.Error().Err(err).Msg("error saving command response")
 	}
-
 }
 
 func (st *PgMiscStore) SaveEvent(tid uint64, event_type string, message string, message_json interface{}, t time.Time) {
-	_, err := st.db.Exec(context.Background(), `INSERT INTO gt06_command_response (event_type,message,message_json,tracker_id,received_time) VALUES ($1,$2,$3,$4)`, event_type, message, message_json, tid, t)
+	_, err := st.db.Exec(context.Background(), `INSERT INTO event_message (event_type,message,message_json,tracker_id,event_timestamp) VALUES ($1,$2,$3,$4,$5)`, event_type, message, message_json, tid, t)
 	if err != nil {
 		st.log.Error().Err(err).Msg("error saving event")
 	}

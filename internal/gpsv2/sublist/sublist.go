@@ -1,8 +1,9 @@
 package sublist
 
 import (
-	"encoding/json"
-	"fmt"
+	"encoding/binary"
+	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -60,11 +61,12 @@ type SublistMap struct {
 }
 
 type Sublist struct {
-	key       uint64
-	list      map[subscriber.Subscriber]bool
-	data      []byte
-	mu        *sync.Mutex
-	prune_dur time.Duration
+	key        uint64
+	list       map[subscriber.Subscriber]bool
+	data       []byte
+	event_data []byte
+	mu         *sync.Mutex
+	prune_dur  time.Duration
 }
 
 func NewSublistMap() *SublistMap {
@@ -89,7 +91,8 @@ func (s *SublistMap) GetSublist(key uint64, create bool) (*Sublist, bool) {
 			m.key = key
 			m.mu = &sync.Mutex{}
 			m.prune_dur = 20 * time.Second
-			m.data = []byte(fmt.Sprintf(`{"tracker_id" : %d}`, key))
+			m.data = []byte{0}
+			m.event_data = []byte{1}
 			s.list[key] = m
 			return &m, true
 		}
@@ -100,6 +103,7 @@ func (s *Sublist) Subscribe(sub subscriber.Subscriber) {
 	s.mu.Lock()
 	s.list[sub] = true
 	sub.Push(s.key, s.data)
+	sub.Push(s.key, s.event_data)
 	s.mu.Unlock()
 }
 
@@ -109,10 +113,11 @@ func (s *Sublist) Unsubscribe(sub subscriber.Subscriber) {
 	s.mu.Unlock()
 }
 
-func (s *Sublist) MarshalSend(lat, lon float64, speed float32, gps_time, server_time time.Time) {
+func (s *Sublist) SendLocation(lat, lon float64, speed float32, gps_time, server_time time.Time) {
+
+	// obj := downstream_type{TrackerId: s.key, GpsTime: gps_time, ServerTime: server_time, Speed: speed, Latitude: lat, Longitude: lon}
+	s.data = encode_location(s.key, lat, lon, speed, gps_time, server_time)
 	s.mu.Lock()
-	obj := downstream_type{TrackerId: s.key, GpsTime: gps_time, ServerTime: server_time, Speed: speed, Latitude: lat, Longitude: lon}
-	s.data, _ = json.Marshal(obj)
 	for sub := range s.list {
 		closed := sub.Push(s.key, s.data)
 		if closed {
@@ -122,14 +127,58 @@ func (s *Sublist) MarshalSend(lat, lon float64, speed float32, gps_time, server_
 	s.mu.Unlock()
 }
 
-type downstream_type struct {
-	TrackerId  uint64    `json:"tid"`
-	ServerTime time.Time `json:"server_time"`
-	GpsTime    time.Time `json:"gps_time"`
-	Latitude   float64   `json:"latitude"`
-	Longitude  float64   `json:"longitude"`
-	Speed      float32   `json:"speed"`
+func (s *Sublist) SendEvent(topic string, message []byte, t time.Time) {
+
+	s.event_data = encode_event(s.key, topic, message, t)
+	s.mu.Lock()
+	for sub := range s.list {
+		closed := sub.Push(s.key, s.event_data)
+		if closed {
+			delete(s.list, sub)
+		}
+	}
+	s.mu.Unlock()
 }
+
+func encode_event(tracker_id uint64, topic string, message []byte, t time.Time) []byte {
+	buf := make([]byte, 0, 100)
+	buf = append(buf, 1)
+	buf = append(buf, []byte(`{"tid":`)...)
+	strconv.AppendUint(buf, tracker_id, 10)
+	buf = append(buf, []byte(`,"topic":"`)...)
+	buf = append(buf, []byte(topic)...)
+	buf = append(buf, '"')
+	if len(message) != 0 {
+		buf = append(buf, []byte(`,"message":`)...)
+		buf = append(buf, message...)
+	}
+
+	buf = append(buf, []byte(`,"time":`)...)
+	strconv.AppendInt(buf, t.Unix(), 10)
+	buf = append(buf, '}')
+	return buf
+}
+
+func encode_location(tracker_id uint64, lat, lon float64, speed float32, gps_time, server_time time.Time) []byte {
+	buf := make([]byte, 39)
+	buf[0] = 0x00
+	binary.LittleEndian.PutUint16(buf[1:], uint16(tracker_id))
+	binary.LittleEndian.PutUint64(buf[3:], math.Float64bits(lat))
+	binary.LittleEndian.PutUint64(buf[11:], math.Float64bits(lon))
+	binary.LittleEndian.PutUint32(buf[19:], math.Float32bits(speed))
+	binary.LittleEndian.PutUint64(buf[23:], uint64(gps_time.UnixMilli()))
+	binary.LittleEndian.PutUint64(buf[31:], uint64(server_time.UnixMilli()))
+	return buf
+}
+
+// type downstream_type struct {
+// 	TrackerId  uint64    `json:"tid"`
+// 	ServerTime time.Time `json:"server_time"`
+// 	GpsTime    time.Time `json:"gps_time"`
+// 	Latitude   float64   `json:"latitude"`
+// 	Longitude  float64   `json:"longitude"`
+// 	Speed      float32   `json:"speed"`
+// }
 
 func (s *Sublist) Send(sender uint64, d []byte) {
 	s.mu.Lock()

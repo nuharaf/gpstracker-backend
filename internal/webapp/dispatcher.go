@@ -24,10 +24,11 @@ type Dispatcher struct {
 }
 
 type _function struct {
-	reqType reflect.Type
-	resType reflect.Type
-	handler reflect.Value
-	role    string
+	reqType      reflect.Type
+	resType      reflect.Type
+	handler      reflect.Value
+	raw_response bool
+	role         string
 }
 
 func has_role(role string, target string) bool {
@@ -97,7 +98,13 @@ func (disp *Dispatcher) session_check(ctx context.Context, session_id string) *c
 
 func (disp *Dispatcher) call(_func _function, user_session *common.UserSessionAtrribute, r *http.Request, w http.ResponseWriter) {
 	var err error
-	response := reflect.New(_func.resType)
+	var response reflect.Value
+	if _func.raw_response {
+		response = reflect.ValueOf(w)
+	} else {
+		response = reflect.New(_func.resType)
+	}
+
 	var err_ref []reflect.Value
 	_ctx := context.WithValue(r.Context(), common.ApiContextKeyType("session_attribute"), user_session)
 	if _func.reqType != nil {
@@ -112,7 +119,9 @@ func (disp *Dispatcher) call(_func _function, user_session *common.UserSessionAt
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+
 		err_ref = _func.handler.Call([]reflect.Value{reflect.ValueOf(_ctx), request, response})
+
 	} else {
 		err_ref = _func.handler.Call([]reflect.Value{reflect.ValueOf(_ctx), response})
 	}
@@ -120,10 +129,13 @@ func (disp *Dispatcher) call(_func _function, user_session *common.UserSessionAt
 		panic(err_ref[0].Interface())
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	err = json.NewEncoder(w).Encode(response.Interface())
-	if err != nil {
-		disp.log.Error().Err(err).Msg("")
+	if !_func.raw_response {
+		w.Header().Set("Content-Type", "application/json")
+		err = json.NewEncoder(w).Encode(response.Interface())
+		if err != nil {
+			disp.log.Error().Err(err).Msg("")
+		}
+		return
 	}
 }
 
@@ -137,6 +149,15 @@ func (disp *Dispatcher) Add(funcname string, f interface{}, role string) {
 		s.reqType = s.handler.Type().In(1).Elem()
 		s.resType = s.handler.Type().In(2).Elem()
 	}
+	s.role = role
+	disp.funcs[funcname] = s
+}
+
+func (disp *Dispatcher) AddRaw(funcname string, f interface{}, role string) {
+	s := _function{}
+	s.handler = reflect.ValueOf(f)
+	s.raw_response = true
+	s.reqType = s.handler.Type().In(1).Elem()
 	s.role = role
 	disp.funcs[funcname] = s
 }
